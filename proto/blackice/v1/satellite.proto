@@ -1,0 +1,144 @@
+syntax = "proto3";
+
+package blackice.v1;
+
+import "blackice/proto/blackice/v1/common.proto";
+import "blackice/proto/blackice/v1/panic.proto";
+
+option go_package = "github.com/TFMV/blackice/proto/blackice/v1;blackicev1";
+
+// SatelliteService manages communication and data transfer with Satellite/HAPS nodes
+// for off-planet backups, emergency relay, and last-resort control plane access.
+service SatelliteService {
+  // SendBackup sends critical data (e.g., ledger snapshots, key material) to orbital storage.
+  // Handles latency-aware traffic shaping and packet prioritization.
+  rpc SendBackup(stream BackupDataChunk) returns (BackupAck);
+
+  // RetrieveBackup retrieves data from orbital storage.
+  rpc RetrieveBackup(RetrieveBackupRequest) returns (stream BackupDataChunk);
+
+  // GetLinkStatus retrieves the status of satellite communication links.
+  rpc GetLinkStatus(LinkStatusRequest) returns (LinkStatusResponse);
+
+  // ActivateEmergencyRelay activates the satellite network as an emergency relay for critical communications.
+  // This is a high-privilege operation, typically triggered during severe panic tiers.
+  rpc ActivateEmergencyRelay(ActivateRelayRequest) returns (RelayActivationResponse);
+
+  // SendControlSignal sends a highly authenticated control signal via the satellite relay.
+  rpc SendControlSignal(ControlSignalRequest) returns (ControlSignalResponse);
+  
+  // GetOrbitalNodeHealth checks the health and status of specific orbital/HAPS nodes.
+  rpc GetOrbitalNodeHealth(OrbitalNodeHealthRequest) returns (OrbitalNodeHealthResponse);
+}
+
+message BackupDataChunk {
+  string backup_id = 1;           // Unique ID for this backup operation
+  BackupContentType content_type = 2; // Type of data being backed up
+  bytes data_payload = 3;         // Chunk of the data payload
+  int64 sequence_number = 4;
+  bool is_last_chunk = 5;
+  Attestation chunk_attestation = 6; // Attestation for this chunk
+  int32 priority = 7; // 0 (lowest) to 10 (highest) for traffic shaping
+  bytes data_hash = 8; // Hash of data_payload for integrity check over high-latency link
+  string hash_algorithm = 9;
+}
+
+enum BackupContentType {
+  CONTENT_TYPE_UNSPECIFIED = 0;
+  LEDGER_SNAPSHOT = 1;
+  ENCRYPTED_KEY_MATERIAL = 2;
+  CRITICAL_CONFIG_STATE = 3;
+  FORENSIC_LOG_ARCHIVE = 4;
+  SYSTEM_RECOVERY_IMAGE = 5;
+}
+
+message BackupAck {
+  Status status = 1;
+  string backup_id = 2;
+  string chunk_receipt_id = 3; // Confirms receipt of a specific chunk or the whole backup
+  int64 received_at_orbital_node_unix_ns = 4;
+  Attestation orbital_node_attestation = 5; // Attestation from satellite node of receipt
+}
+
+message RetrieveBackupRequest {
+  string backup_id = 1;
+  BackupContentType content_type_filter = 2; // Optional: filter by content type
+  int64 as_of_timestamp_unix_ns = 3;     // Retrieve latest backup as of this time
+  Attestation retriever_attestation = 4;   // Authorization for retrieval
+}
+
+message SatelliteLink {
+  string link_id = 1;
+  string ground_station_id = 2;
+  string orbital_node_id = 3;   // Satellite or HAPS ID
+  LinkState state = 4;
+  double current_latency_ms = 5;
+  double current_bandwidth_mbps = 6;
+  double packet_loss_percent = 7;
+  int64 last_heartbeat_unix_ns = 8;
+  Attestation link_status_attestation = 9; // Attestation of this status from the ground/orbital node
+  enum LinkState {
+    LINK_STATE_UNKNOWN = 0;
+    LINK_STATE_ACTIVE = 1;
+    LINK_STATE_DEGRADED = 2;
+    LINK_STATE_INACTIVE = 3;
+    LINK_STATE_CONGESTED = 4;
+  }
+}
+
+message LinkStatusRequest {
+  repeated string link_ids_filter = 1; // If empty, returns all known links
+}
+
+message LinkStatusResponse {
+  Status status = 1;
+  repeated SatelliteLink links = 2;
+  int64 report_generated_at_unix_ns = 3;
+}
+
+message ActivateRelayRequest {
+  string reason = 1;
+  PanicTier.Level triggering_panic_tier = 2;
+  Attestation admin_attestation = 3; // Strong authorization required
+  // Expected duration for relay activation, if known (e.g., "24h")
+  string expected_duration_str = 4; 
+}
+
+message RelayActivationResponse {
+  Status status = 1;
+  string relay_session_id = 2;
+  repeated SatelliteLink active_relay_links = 3;
+  int64 activated_at_unix_ns = 4;
+  LedgerEntry ledger_entry_confirmation = 5;
+}
+
+// For sending critical, low-bandwidth control signals (e.g., shutdown, activate specific defenses)
+message ControlSignalRequest {
+  string relay_session_id = 1; // Must match an active relay session
+  string target_component_id = 2; // Target component to receive the signal
+  string signal_type = 3; // e.g., "EMERGENCY_SHUTDOWN", "ACTIVATE_FAILSAFE_X"
+  bytes signal_payload = 4; // Encrypted and authenticated payload
+  Attestation sender_attestation = 5; // Highly trusted sender (e.g., core panic controller)
+}
+
+message ControlSignalResponse {
+  Status status = 1;
+  string signal_ack_id = 2;
+  int64 transmitted_via_link_id = 3;
+  Attestation orbital_transmit_attestation = 4; // Confirmation from satellite of transmission
+}
+
+message OrbitalNodeHealthRequest {
+  repeated string orbital_node_ids_filter = 1;
+}
+
+message StringStringMap {
+  map<string, string> values = 1;
+}
+
+message OrbitalNodeHealthResponse {
+  Status status = 1;
+  repeated NodeHealth orbital_nodes_health = 2;
+  // Could include orbital-specific metrics like radiation levels, battery, etc.
+  map<string, StringStringMap> orbital_specific_metrics = 3;
+} 

@@ -1,0 +1,290 @@
+syntax = "proto3";
+
+package blackice.v1;
+
+import "blackice/proto/blackice/v1/common.proto";
+
+option go_package = "github.com/TFMV/blackice/proto/blackice/v1;blackicev1";
+
+// StorageService provides mutation-aware storage capabilities, integrating
+// with Apache Iceberg and offering Git-like semantics for data versioning.
+service StorageService {
+  // CreateTable creates a new table with Iceberg schema and BlackIce versioning.
+  rpc CreateTable(CreateTableRequest) returns (StorageOperationResponse);
+
+  // GetTableSchema retrieves the schema for a given table.
+  rpc GetTableSchema(GetTableRequest) returns (GetTableSchemaResponse);
+
+  // WriteData writes a batch of data to a table. This creates a new snapshot/commit.
+  // Data is expected in a format like Apache Parquet or ORC, referenceable by a URI.
+  rpc WriteData(WriteDataRequest) returns (WriteDataResponse);
+
+  // ReadData reads data from a table, optionally at a specific snapshot or time.
+  // Supports time-travel queries.
+  rpc ReadData(ReadDataRequest) returns (stream DataChunk);
+
+  // CreateSnapshot explicitly creates a new snapshot for a table.
+  rpc CreateSnapshot(CreateSnapshotRequest) returns (SnapshotResponse);
+
+  // GetSnapshot retrieves details of a specific snapshot.
+  rpc GetSnapshot(GetSnapshotRequest) returns (SnapshotResponse);
+
+  // ListSnapshots lists snapshots for a table, with pagination and filtering.
+  rpc ListSnapshots(ListSnapshotsRequest) returns (ListSnapshotsResponse);
+
+  // RollbackTable rolls a table back to a specific snapshot ID or timestamp.
+  // This is a critical operation requiring strong attestation.
+  rpc RollbackTable(RollbackTableRequest) returns (StorageOperationResponse);
+
+  // CreateBranch creates a new branch from an existing table state (snapshot).
+  rpc CreateBranch(CreateBranchRequest) returns (BranchResponse);
+
+  // MergeBranch merges changes from one branch into another (or main).
+  // Implements conflict resolution strategies.
+  rpc MergeBranch(MergeBranchRequest) returns (MergeResponse);
+
+  // ListBranches lists all branches for a given table.
+  rpc ListBranches(ListBranchesRequest) returns (ListBranchesResponse);
+
+  // GetStorageStats provides operational statistics for the storage service.
+  rpc GetStorageStats(StorageStatsRequest) returns (StorageStatsResponse);
+  
+  // ManageRetentionPolicy sets or updates retention policies for snapshots and data.
+  rpc ManageRetentionPolicy(ManageRetentionPolicyRequest) returns (StorageOperationResponse);
+}
+
+message IcebergSchema {
+  string schema_json = 1; // JSON representation of the Iceberg schema
+  int32 schema_id = 2;
+  // Fields for partition spec, sort order, etc., can be added here.
+}
+
+message CreateTableRequest {
+  string table_name = 1; // e.g., "finance.transactions_v1"
+  IcebergSchema schema = 2;
+  map<string, string> table_properties = 3; // Iceberg table properties
+  Attestation admin_attestation = 4;      // Attestation for table creation
+  string initial_branch_name = 5;         // Default: "main"
+}
+
+message StorageOperationResponse {
+  Status status = 1;
+  string operation_id = 2;
+  int64 completed_at_unix_ns = 3;
+  LedgerEntry ledger_entry_confirmation = 4; // Confirmation from ledger
+}
+
+message GetTableRequest {
+  string table_name = 1;
+  string branch_name = 2; // Optional, defaults to main
+}
+
+message GetTableSchemaResponse {
+  Status status = 1;
+  string table_name = 2;
+  IcebergSchema schema = 3;
+  int64 last_modified_unix_ns = 4;
+  string current_snapshot_id = 5;
+}
+
+// For WriteData, data is typically pre-staged (e.g., S3, GCS)
+// and this request points to it.
+message DataFile {
+  string uri = 1; // URI to the data file (e.g., s3://bucket/path/file.parquet)
+  string file_format = 2; // e.g., "parquet", "orc", "avro"
+  int64 record_count = 3;
+  int64 file_size_bytes = 4;
+  // Column-level stats can be added for more optimized writes
+  map<string, bytes> column_stats_cbor = 5; // CBOR encoded stats
+}
+
+message WriteDataRequest {
+  string table_name = 1;
+  string branch_name = 2; // Optional, defaults to main
+  repeated DataFile data_files = 3;
+  string commit_message = 4;
+  Attestation committer_attestation = 5; // User/service attesting this write
+  map<string, string> write_properties = 6; // e.g., target file size for Iceberg
+  bool is_replace_operation = 7; // For overwrite semantics
+  string replace_filter_expression = 8; // Predicate for dynamic overwrite
+}
+
+message WriteDataResponse {
+  Status status = 1;
+  string snapshot_id = 2; // ID of the newly created snapshot
+  int64 commit_timestamp_unix_ns = 3;
+  int64 records_written = 4;
+  LedgerEntry ledger_entry_confirmation = 5;
+}
+
+message ReadDataRequest {
+  string table_name = 1;
+  string branch_name = 2; // Optional, defaults to main
+  oneof point_in_time {
+    string snapshot_id = 3;
+    int64 as_of_timestamp_unix_ns = 4;
+  }
+  repeated string selected_columns = 5; // If empty, reads all columns
+  string filter_expression = 6;       // SQL-like filter predicate
+  int32 chunk_size_bytes = 7;         // Desired size for each DataChunk payload
+}
+
+// DataChunk streams data back to the client, likely in Arrow format.
+message DataChunk {
+  bytes arrow_payload = 1; // Serialized Arrow RecordBatch
+  int64 sequence_number = 2;
+  bool is_last_chunk = 3;
+  Status status = 4; // Status for this specific chunk (e.g., if an error occurs mid-stream)
+}
+
+message Snapshot {
+  string snapshot_id = 1;
+  int64 timestamp_unix_ns = 2;
+  string parent_snapshot_id = 3; // Empty if first snapshot
+  string operation = 4;          // e.g., "append", "overwrite", "replace", "delete"
+  map<string, string> summary = 5; // Iceberg snapshot summary (e.g., files added/deleted)
+  string manifest_list_uri = 6;    // URI to the manifest list file
+  Attestation committer_attestation = 7; // Stored with snapshot for audit
+  LedgerEntry ledger_reference = 8;    // Reference to ledger entry for this commit
+}
+
+message CreateSnapshotRequest {
+  string table_name = 1;
+  string branch_name = 2;
+  string commit_message = 3;
+  Attestation committer_attestation = 4;
+}
+
+message SnapshotResponse {
+  Status status = 1;
+  Snapshot snapshot = 2;
+}
+
+message ListSnapshotsRequest {
+  string table_name = 1;
+  string branch_name = 2;
+  string page_token = 3; // For pagination
+  int32 page_size = 4;
+  int64 start_timestamp_unix_ns = 5; // Filter by time range
+  int64 end_timestamp_unix_ns = 6;
+}
+
+message GetSnapshotRequest {
+  string table_name = 1;
+  string snapshot_id = 2;
+}
+
+message ListSnapshotsResponse {
+  Status status = 1;
+  repeated Snapshot snapshots = 2;
+  string next_page_token = 3;
+}
+
+message RollbackTableRequest {
+  string table_name = 1;
+  string branch_name = 2;
+  oneof target {
+    string snapshot_id = 3;
+    int64 to_timestamp_unix_ns = 4;
+  }
+  Attestation admin_attestation = 5; // Requires strong authorization
+  string reason = 6;
+}
+
+message Branch {
+  string branch_name = 1;
+  string table_name = 2;
+  string head_snapshot_id = 3;
+  int64 created_at_unix_ns = 4;
+  string created_from_branch = 5; // Optional: parent branch
+  string created_from_snapshot_id = 6; // Snapshot ID at branching point
+}
+
+message CreateBranchRequest {
+  string table_name = 1;
+  string new_branch_name = 2;
+  string source_branch_name = 3; // Optional: defaults to main
+  string source_snapshot_id = 4; // Optional: defaults to head of source_branch_name
+  Attestation creator_attestation = 5;
+}
+
+message BranchResponse {
+  Status status = 1;
+  Branch branch = 2;
+}
+
+message MergeBranchRequest {
+  string table_name = 1;
+  string source_branch = 2;
+  string target_branch = 3;
+  string commit_message = 4;
+  Attestation merger_attestation = 5;
+  enum ConflictResolutionStrategy {
+    FAIL_ON_CONFLICT = 0;
+    SOURCE_WINS = 1;
+    TARGET_WINS = 2;
+    THREE_WAY_MERGE_OPERATOR_ASSIST = 3; // Requires operator input for conflicts
+  }
+  ConflictResolutionStrategy strategy = 6;
+  // Details for operator assist if strategy is THREE_WAY_MERGE_OPERATOR_ASSIST
+  string operator_id_for_assist = 7;
+}
+
+message MergeResponse {
+  Status status = 1;
+  string new_snapshot_id_on_target = 2;
+  int32 conflicts_resolved = 3;
+  int32 conflicts_pending_operator = 4;
+  LedgerEntry ledger_entry_confirmation = 5;
+}
+
+message ListBranchesRequest {
+  string table_name = 1;
+}
+
+message ListBranchesResponse {
+  Status status = 1;
+  repeated Branch branches = 2;
+}
+
+message StorageStatsRequest {
+  string table_name_filter = 1; // Optional: filter by table name (can use wildcards)
+  string branch_name_filter = 2; // Optional: filter by branch name
+}
+
+message StorageStatsResponse {
+  Status status = 1;
+  int64 total_tables = 2;
+  int64 total_snapshots = 3;
+  int64 total_data_size_bytes = 4;
+  map<string, TableStorageStats> per_table_stats = 5;
+  NodeHealth service_health = 6;
+}
+
+message TableStorageStats {
+  string table_name = 1;
+  int64 snapshots_count = 2;
+  int64 data_size_bytes = 3;
+  int64 last_commit_at_unix_ns = 4;
+  int32 branches_count = 5;
+}
+
+message ManageRetentionPolicyRequest {
+  string table_name = 1;
+  string branch_name = 2; // Optional, policy can be per-branch
+  RetentionPolicy policy = 3;
+  Attestation admin_attestation = 4;
+}
+
+message RetentionPolicy {
+  // Example: Keep snapshots for 30 days, then retain monthly for 1 year, then yearly for 7 years.
+  // Keep all snapshots newer than this duration (e.g., "30d", "90d")
+  string keep_min_duration_str = 1; // ISO 8601 duration format (e.g., P30D)
+  // Number of hourly/daily/weekly/monthly/yearly snapshots to retain beyond min_duration
+  int32 keep_hourly_count = 2;
+  int32 keep_daily_count = 3;
+  int32 keep_weekly_count = 4;
+  int32 keep_monthly_count = 5;
+  int32 keep_yearly_count = 6;
+  bool delete_orphaned_files = 7; // Whether to physically delete data files not referenced by retained snapshots
+} 

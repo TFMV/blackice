@@ -1,0 +1,142 @@
+syntax = "proto3";
+
+package blackice.v1;
+
+import "blackice/proto/blackice/v1/common.proto";
+
+option go_package = "github.com/TFMV/blackice/proto/blackice/v1;blackicev1";
+
+// AnomalyService provides real-time anomaly detection based on telemetry from
+// various system components. It uses statistical modeling, Falco, Zeek, OSSEC inputs,
+// and context-aware deep learning models.
+service AnomalyService {
+  // SubmitTelemetry is called by other BlackIce components to submit operational telemetry.
+  rpc SubmitTelemetry(stream TelemetryEvent) returns (TelemetryResponse);
+
+  // QueryAnomalies allows querying for detected anomalies based on various criteria.
+  rpc QueryAnomalies(QueryAnomaliesRequest) returns (QueryAnomaliesResponse);
+
+  // GetAnomalyDetails retrieves detailed information about a specific anomaly.
+  rpc GetAnomalyDetails(GetAnomalyDetailsRequest) returns (GetAnomalyDetailsResponse);
+
+  // UpdateDetectionModel (Admin) triggers an update or retraining of a specific detection model.
+  rpc UpdateDetectionModel(UpdateModelRequest) returns (UpdateModelResponse);
+
+  // ProvideFeedback allows human analysts to provide feedback on an anomaly's classification,
+  // feeding into Bayesian feedback loops.
+  rpc ProvideFeedback(FeedbackRequest) returns (FeedbackResponse);
+  
+  // GetDetectorStatus returns the current operational status of anomaly detectors.
+  rpc GetDetectorStatus(DetectorStatusRequest) returns (DetectorStatusResponse);
+}
+
+// TelemetryEvent represents a single piece of telemetry data.
+// Based on OpenTelemetry, Falco, Zeek, OSSEC inputs.
+message TelemetryEvent {
+  string event_id = 1;
+  string source_component_id = 2; // e.g., "ingest-gate-node-123", "ledger-node-abc"
+  string event_type = 3;          // e.g., "syscall", "network_flow", "log_entry", "metric"
+  int64 timestamp_unix_ns = 4;
+  map<string, TelemetryValue> attributes = 5; // Key-value attributes of the event
+  bytes raw_data = 6; // Optional raw data (e.g., raw log line, packet capture snippet)
+}
+
+message TelemetryValue {
+  oneof value_type {
+    string string_value = 1;
+    int64 int_value = 2;
+    double double_value = 3;
+    bool bool_value = 4;
+    bytes bytes_value = 5;
+  }
+}
+
+message TelemetryResponse {
+  Status status = 1;
+  string batch_ack_id = 2; // If telemetry is processed in batches
+  int32 events_processed = 3;
+}
+
+message QueryAnomaliesRequest {
+  int64 start_time_unix_ns = 1;
+  int64 end_time_unix_ns = 2;
+  string source_component_id_filter = 3;
+  Anomaly.Severity min_severity_filter = 4;
+  string detector_id_filter = 5;
+  int32 page_size = 6;
+  string page_token = 7;
+  bool acknowledged_filter = 8; // Filter by acknowledged status
+  string analyst_id_filter = 9; // Filter by analyst who provided feedback
+}
+
+message QueryAnomaliesResponse {
+  Status status = 1;
+  repeated Anomaly anomalies = 2;
+  string next_page_token = 3;
+}
+
+message GetAnomalyDetailsRequest {
+  string anomaly_id = 1;
+}
+
+message GetAnomalyDetailsResponse {
+  Status status = 1;
+  Anomaly anomaly_details = 2;
+  repeated TelemetryEvent correlated_events = 3; // Telemetry that led to this anomaly
+  repeated AnalystFeedback feedback_history = 4; // History of analyst feedback
+}
+
+message UpdateModelRequest {
+  string model_id = 1; // ID of the detection model to update
+  string model_version_tag = 2; // e.g., "latest", "v2.1-beta"
+  // URI to model artifacts, or parameters for retraining trigger
+  string model_source_uri = 3; 
+  Attestation admin_attestation = 4;
+  bool force_retrain = 5; // If true, retrain even if model source hasn't changed
+}
+
+message UpdateModelResponse {
+  Status status = 1;
+  string model_id = 2;
+  string new_model_version = 3;
+  string update_task_id = 4; // ID to track the async update/retraining task
+}
+
+message AnalystFeedback {
+  string feedback_id = 1;
+  string anomaly_id = 2;
+  string analyst_id = 3;
+  bool is_true_positive = 4;
+  Anomaly.Severity corrected_severity = 5; // If analyst corrects the severity
+  string comments = 6;
+  int64 feedback_at_unix_ns = 7;
+  Attestation analyst_attestation = 8; // Optional: if analysts have signing keys
+}
+
+message FeedbackRequest {
+  AnalystFeedback feedback = 1;
+}
+
+message FeedbackResponse {
+  Status status = 1;
+  string feedback_id_confirmed = 2;
+  TrustScore impact_on_source_trust_score = 3; // If feedback adjusts a source's score
+}
+
+message DetectorStatusRequest {
+  repeated string detector_ids = 1; // If empty, returns status for all detectors
+}
+
+message DetectorInfo {
+    string detector_id = 1;
+    string detector_type = 2; // e.g., "FalcoRuleEngine", "ZeekScript", "DNNClassifier"
+    string version = 3;
+    NodeHealth.State status = 4;
+    int64 last_event_processed_unix_ns = 5;
+    map<string, string> detector_params = 6;
+}
+
+message DetectorStatusResponse {
+    Status status = 1;
+    repeated DetectorInfo detectors = 2;
+} 

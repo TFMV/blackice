@@ -1,0 +1,211 @@
+syntax = "proto3";
+
+package blackice.v1;
+
+import "blackice/proto/blackice/v1/common.proto";
+
+option go_package = "github.com/TFMV/blackice/proto/blackice/v1;blackicev1";
+
+// ResilienceService manages distributed data resilience through sharding,
+// replication, and reconstruction across decentralized networks (Storj, IPFS).
+service ResilienceService {
+  // StoreObject encrypts, shards, and distributes an object across the network.
+  rpc StoreObject(StoreObjectRequest) returns (StoreObjectResponse);
+
+  // RetrieveObject reconstructs and decrypts an object from its distributed shards.
+  rpc RetrieveObject(RetrieveObjectRequest) returns (stream ObjectChunk);
+
+  // DeleteObject marks an object for deletion and eventually removes its shards.
+  rpc DeleteObject(DeleteObjectRequest) returns (ResilienceOperationResponse);
+
+  // GetObjectStatus retrieves the current status of a distributed object (e.g., health, shard locations).
+  rpc GetObjectStatus(GetObjectStatusRequest) returns (GetObjectStatusResponse);
+
+  // RepairObject initiates a repair process for a potentially degraded object (e.g., missing shards).
+  rpc RepairObject(RepairObjectRequest) returns (ResilienceOperationResponse);
+
+  // UpdateObjectPlacementPolicy updates the placement policy for an object or a class of objects.
+  rpc UpdateObjectPlacementPolicy(UpdatePlacementPolicyRequest) returns (ResilienceOperationResponse);
+  
+  // GetStorageNodeHealth allows querying health of individual storage nodes participating in Storj/IPFS.
+  rpc GetStorageNodeHealth(StorageNodeHealthRequest) returns (StorageNodeHealthResponse);
+}
+
+message ShardMetadata {
+  string shard_id = 1;
+  string storage_node_id = 2; // ID of the node holding this shard (e.g., Storj node ID)
+  string storage_provider = 3; // e.g., "Storj", "IPFS", "FileSystem"
+  string shard_location_hint = 4; // e.g., IPFS CID, Storj segment path
+  int64 size_bytes = 5;
+  Attestation integrity_attestation = 6; // Attestation from the storage node for this shard
+  int64 stored_at_unix_ns = 7;
+  ShardHealthStatus health_status = 8;
+  enum ShardHealthStatus {
+    UNKNOWN = 0;
+    HEALTHY = 1;
+    UNREACHABLE = 2;
+    CORRUPTED = 3;
+    PENDING_REPAIR = 4;
+  }
+}
+
+message ObjectMetadata {
+  string object_id = 1; // Unique ID for the original object
+  int64 original_size_bytes = 2;
+  string content_type = 3;
+  map<string, string> user_metadata = 4;
+  EncryptionMetadata encryption_metadata = 5;
+  ShardingPolicy sharding_policy_used = 6;
+  repeated ShardMetadata shards = 7;
+  int64 created_at_unix_ns = 8;
+  int64 last_accessed_unix_ns = 9;
+  int64 last_repaired_at_unix_ns = 10;
+  Attestation object_creation_attestation = 11; // Attestation of the object's initial secure storage
+  ObjectHealthStatus overall_health = 12;
+  enum ObjectHealthStatus {
+    HEALTH_UNKNOWN = 0;
+    HEALTH_OPTIMAL = 1;      // All shards healthy, redundancy goals met
+    HEALTH_DEGRADED = 2;     // Reconstructable, but some shards unhealthy or redundancy low
+    HEALTH_AT_RISK = 3;      // Barely reconstructable, immediate repair needed
+    HEALTH_UNRECOVERABLE = 4; // Data loss has occurred
+  }
+}
+
+message EncryptionMetadata {
+  string master_key_id = 1;         // Reference to the master encryption key
+  bytes encrypted_data_key = 2;   // Data encryption key, encrypted with master key
+  string key_encryption_algorithm = 3; // e.g., "AES-GCM-SIV"
+  bytes nonce_or_iv = 4;
+  map<string, string> additional_authenticated_data = 5;
+}
+
+message ShardingPolicy {
+  enum ShardingAlgorithm {
+    REED_SOLOMON = 0;
+    SHAMIR_SECRET_SHARING = 1;
+    HYBRID_REED_SOLOMON_SHAMIR = 2;
+  }
+  ShardingAlgorithm algorithm = 1;
+  int32 total_shards = 2;           // k+m for Reed-Solomon, n for Shamir
+  int32 required_shards_for_reconstruction = 3; // k for Reed-Solomon, t for Shamir
+  map<string, string> algorithm_parameters = 4; // e.g., polynomial details for Shamir
+  string placement_policy_id = 5; // Defines geographic/provider distribution rules
+}
+
+message StoreObjectRequest {
+  string object_id = 1; // Client can suggest, server may override or append unique suffix
+  bytes object_data_chunk = 2; // Streamed if object is large, or single chunk for small objects
+  // For streamed requests:
+  int64 sequence_number = 3;
+  bool is_last_chunk = 4;
+  int64 total_object_size_bytes = 5; // If known upfront
+
+  string content_type = 6;
+  map<string, string> user_metadata = 7;
+  ShardingPolicy sharding_policy_override = 8; // Optional: override default policy
+  Attestation client_attestation = 9; // Attestation of the data from the client
+}
+
+message StoreObjectResponse {
+  Status status = 1;
+  string object_id = 2;
+  ObjectMetadata metadata_confirmation = 3;
+  LedgerEntry ledger_entry_confirmation = 4;
+  int64 completed_at_unix_ns = 5;
+}
+
+message RetrieveObjectRequest {
+  string object_id = 1;
+  // Optional: specify specific shards to use or avoid, for advanced recovery scenarios
+  repeated string preferred_shard_ids = 2;
+  repeated string excluded_shard_ids = 3;
+  int32 desired_chunk_size_bytes = 4; // How large each ObjectChunk payload should be
+}
+
+message ObjectChunk {
+  bytes data_chunk = 1;
+  int64 sequence_number = 2;
+  bool is_last_chunk = 3;
+  Status status = 4; // Status for this chunk, e.g., if reconstruction errors occur mid-stream
+  Attestation chunk_integrity_attestation = 5; // Attestation of this reconstructed chunk
+}
+
+message DeleteObjectRequest {
+  string object_id = 1;
+  Attestation admin_attestation = 2; // Authorization for deletion
+  string reason = 3;
+  bool immediate_shred = 4; // If true, attempt to securely shred shards immediately vs. grace period
+}
+
+message ResilienceOperationResponse {
+  Status status = 1;
+  string operation_id = 2;
+  int64 completed_at_unix_ns = 3;
+  LedgerEntry ledger_entry_confirmation = 4;
+}
+
+message GetObjectStatusRequest {
+  string object_id = 1;
+  bool include_shard_details = 2;
+}
+
+message GetObjectStatusResponse {
+  Status status = 1;
+  ObjectMetadata metadata = 2;
+}
+
+message RepairObjectRequest {
+  string object_id = 1;
+  Attestation admin_attestation = 2; // Authorization for repair (may involve cost/resource use)
+  string reason = 3;
+  // Optional: specify a sharding policy to migrate to during repair
+  ShardingPolicy target_sharding_policy = 4;
+}
+
+message UpdatePlacementPolicyRequest {
+  string policy_id = 1; // New or existing policy ID
+  PlacementPolicy policy_definition = 2;
+  Attestation admin_attestation = 3;
+}
+
+message PlacementPolicy {
+  string policy_id = 1;
+  string description = 2;
+  repeated PlacementRule rules = 3;
+  enum Strategy {
+    GEO_DIVERSE_REGIONS = 0;
+    PROVIDER_DIVERSE = 1;
+    LOW_LATENCY_ACCESS = 2;
+    // More can be added
+  }
+  Strategy strategy = 4;
+  map<string, string> strategy_parameters = 5;
+}
+
+message PlacementRule {
+  // e.g., require_min_shards_in_region["US-EAST"] = 2
+  // e.g., exclude_providers = ["AWS", "GCP"]
+  map<string, string> conditions = 1;
+  int32 min_shards_match = 2;
+  int32 max_shards_match = 3;
+}
+
+message StorageNodeHealthRequest {
+  string node_id = 1; // Specific node ID to query
+  string provider_filter = 2; // e.g., "Storj", "IPFS"
+  bool only_unhealthy_nodes = 3;
+}
+
+message StorageNodeHealthResponse {
+  Status status = 1;
+  repeated NodeHealth node_health_details = 2;
+  map<string, ProviderStats> provider_summary_stats = 3;
+}
+
+message ProviderStats {
+  string provider_name = 1;
+  int32 total_nodes = 2;
+  int32 healthy_nodes = 3;
+  int64 total_capacity_bytes = 4;
+  int64 used_capacity_bytes = 5;
+} 
