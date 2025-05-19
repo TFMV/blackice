@@ -1,0 +1,167 @@
+syntax = "proto3";
+
+package blackice.v1;
+
+import "blackice/proto/blackice/v1/common.proto";
+
+option go_package = "github.com/TFMV/blackice/proto/blackice/v1;blackicev1";
+
+// PanicService coordinates the system-wide response to critical security events,
+// managing tiered burnback, controlled isolation, and forensic state preservation.
+service PanicService {
+  // TriggerPanic initiates a panic event or escalates an existing one.
+  // Requires strong attestation and potentially multi-party authorization for higher tiers.
+  rpc TriggerPanic(TriggerPanicRequest) returns (PanicResponse);
+
+  // GetPanicStatus retrieves the current status of the panic system or a specific event.
+  rpc GetPanicStatus(GetPanicStatusRequest) returns (PanicStatusResponse);
+
+  // AcknowledgeSignal is used by components to acknowledge receipt and execution of panic directives.
+  rpc AcknowledgeSignal(SignalAcknowledgement) returns (AcknowledgementResponse);
+
+  // RequestEscalation requests an escalation to a higher panic tier from an authorized entity.
+  rpc RequestEscalation(EscalationRequest) returns (PanicResponse);
+
+  // DeactivatePanic attempts to return the system to a normal operational state post-panic.
+  // Requires thorough verification and authorization.
+  rpc DeactivatePanic(DeactivatePanicRequest) returns (PanicResponse);
+  
+  // ManagePanicPolicy (Admin) allows updating panic tiers and response playbooks.
+  rpc ManagePanicPolicy(ManagePanicPolicyRequest) returns (ManagePanicPolicyResponse);
+
+  // CoordinateBurnback (Internal) handles cross-region coordination for burnback.
+  // This is likely called by a leader-elected panic coordinator.
+  rpc CoordinateBurnback(BurnbackCoordinationRequest) returns (BurnbackCoordinationResponse);
+}
+
+// Tiered Panic Levels as per requirements (Sec 7.3, 11)
+// These levels dictate the severity of automated and manual responses.
+message PanicTier {
+  enum Level {
+    TIER_0_NORMAL = 0;        // Normal operations
+    TIER_1_GUARDED = 1;       // Heightened monitoring, reduced thresholds for alerts
+    TIER_2_ISOLATE_EDGE = 2;  // Isolate specific edge nodes/segments, rate limit external APIs
+    TIER_3_REGIONAL_LOCKDOWN = 3; // Isolate entire regions, pause non-critical ingestion
+    TIER_4_SYSTEM_BURNBACK = 4; // Progressive rollback of data/config, activate satellite relays
+    TIER_5_FULL_STOP = 5;     // Complete system halt, preserve forensic state, activate off-planet backup
+  }
+  Level level = 1;
+  string description = 2;
+  // Playbook ID associated with actions for this tier
+  string playbook_id = 3; 
+}
+
+message TriggerPanicRequest {
+  PanicTier.Level target_tier = 1;
+  string reason = 2;
+  string triggering_component_id = 3; // ID of the component detecting the need for panic
+  Attestation trigger_attestation = 4; // Attestation from the triggering component
+  repeated Anomaly associated_anomalies = 5; // Anomalies leading to this panic
+  // For higher tiers, may require multi-party authorization attestations
+  repeated Attestation authorization_attestations = 6;
+  string incident_id = 7; // Correlate with incident management systems
+}
+
+message PanicResponse {
+  Status status = 1;
+  string panic_event_id = 2;
+  PanicTier.Level current_tier_activated = 3;
+  int64 activated_at_unix_ns = 4;
+  LedgerEntry ledger_entry_confirmation = 5;
+  string next_steps_summary = 6;
+}
+
+message GetPanicStatusRequest {
+  string panic_event_id = 1; // Optional: if empty, returns general system panic status
+}
+
+message PanicStatusResponse {
+  Status status = 1;
+  string panic_event_id = 2; // If a specific event is active
+  PanicTier.Level current_system_tier = 3;
+  string current_playbook_id = 4;
+  map<string, PanicTier.Level> component_states = 5; // State of various components
+  int64 last_updated_unix_ns = 6;
+  NodeHealth panic_service_health = 7;
+}
+
+message SignalAcknowledgement {
+  string panic_event_id = 1;
+  string component_id = 2;
+  PanicTier.Level acknowledged_tier = 3;
+  Status execution_status = 4; // Status of executing the tier's actions
+  Attestation component_attestation = 5;
+  int64 acknowledged_at_unix_ns = 6;
+}
+
+message AcknowledgementResponse {
+  Status status = 1;
+  string ack_id = 2;
+}
+
+message EscalationRequest {
+  string panic_event_id = 1;
+  PanicTier.Level requested_tier = 2;
+  string reason = 3;
+  Attestation requester_attestation = 4;
+  repeated Attestation approval_attestations = 5; // If pre-approved by some parties
+}
+
+message DeactivatePanicRequest {
+  string panic_event_id = 1;
+  string reason_for_deactivation = 2;
+  Attestation admin_attestation = 3; // Requires high privilege
+  // Results of post-incident review / all-clear checklist
+  map<string, bool> deactivation_checklist_results = 4; 
+}
+
+message PanicPlaybook {
+  string playbook_id = 1;
+  PanicTier.Level tier = 2;
+  string description = 3;
+  repeated PlaybookAction actions = 4;
+  int64 version = 5;
+  int64 last_updated_unix_ns = 6;
+  string updated_by_admin_id = 7;
+}
+
+message PlaybookAction {
+  string action_id = 1;
+  string description = 2;
+  string target_service = 3; // e.g., "IngestGate", "StorageService", "all"
+  string rpc_method_to_call = 4; // e.g., "IsolateRegion", "ReduceThroughput"
+  bytes request_payload_template = 5; // Template for the RPC request
+  int32 execution_order = 6;
+  bool require_acknowledgement = 7;
+  string fallback_action_id = 8; // If this action fails
+}
+
+message ManagePanicPolicyRequest {
+  // Can update a playbook, or a specific tier's default playbook
+  oneof policy_update {
+    PanicPlaybook playbook = 1;
+    PanicTier tier_definition = 2;
+  }
+  Attestation admin_attestation = 3;
+}
+
+message ManagePanicPolicyResponse {
+  Status status = 1;
+  string policy_version = 2;
+}
+
+message BurnbackCoordinationRequest {
+  string panic_event_id = 1;
+  PanicTier.Level target_tier = 2;
+  repeated string affected_regions = 3;
+  repeated string affected_services = 4;
+  // Quorum policy for coordinated actions across regions/services
+  string quorum_policy_id = 5; 
+  Attestation coordinator_attestation = 6; // Attestation from the panic coordinator leader
+}
+
+message BurnbackCoordinationResponse {
+  Status status = 1;
+  QuorumDecision decision = 2;
+  map<string, Status> region_responses = 3; // Status from each region coordinator
+} 

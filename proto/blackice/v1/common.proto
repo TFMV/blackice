@@ -1,0 +1,187 @@
+syntax = "proto3";
+
+package blackice.v1;
+
+option go_package = "github.com/TFMV/blackice/proto/blackice/v1;blackicev1";
+
+// Common status response for operations
+message Status {
+  enum Code {
+    OK = 0;
+    ERROR = 1; // Generic error
+    UNAUTHORIZED = 2;
+    INVALID_INPUT = 3;
+    NOT_FOUND = 4;
+    ALREADY_EXISTS = 5;
+    INTERNAL_ERROR = 6; // Unspecified internal error
+    UNAVAILABLE = 7;    // Service temporarily unavailable
+    TIMEOUT = 8;
+    TAMPERED = 9;      // Data or request appears to have been tampered with
+    COMPROMISED = 10;  // Component or system may be compromised
+    QUARANTINED = 11;  // Component has been quarantined
+    DEGRADED = 12;     // Service is operating in a degraded state
+  }
+  Code code = 1;
+  string message = 2;
+  map<string, string> details = 3; // Additional error details
+}
+
+// Trust score evaluation
+message TrustScore {
+  int32 score = 1;           // 0-100 trust score
+  string source_id = 2;      // Source identifier (e.g., node_id, user_id, service_id)
+  string evaluation_id = 3;  // Unique evaluation ID
+  int64 timestamp_unix_ns = 4; // Evaluation timestamp (Unix time in nanoseconds)
+  repeated Anomaly anomalies = 5; // Detected anomalies contributing to this score
+  string evaluator_version = 6; // Version of the trust scoring algorithm
+}
+
+// Anomaly detection result
+message Anomaly {
+  string id = 1;                  // Unique anomaly ID
+  string description = 2;
+  float confidence = 3;           // 0-1 confidence score
+  int64 detected_at_unix_ns = 4;  // Detection timestamp (Unix time in nanoseconds)
+  string detector_id = 5;         // Identifier of the detector that found this anomaly
+  map<string, string> metadata = 6; // e.g., specific metrics that triggered it
+  Severity severity = 7;          // Severity of the anomaly
+  enum Severity {
+    UNKNOWN = 0;
+    INFO = 1;
+    LOW = 2;
+    MEDIUM = 3;
+    HIGH = 4;
+    CRITICAL = 5;
+  }
+}
+
+// Node health status, as defined in requirements section 7.1
+message NodeHealth {
+  enum State {
+    HEALTHY = 0;
+    GUARDED = 1;
+    DEGRADED = 2;
+    QUARANTINED = 3;
+    PANIC = 4;
+    ISOLATED = 5;        // Edge state
+    REJOIN_PENDING = 6;  // Edge state
+    RECONCILED = 7;      // Edge state
+  }
+  string node_id = 1;
+  State state = 2;
+  int64 state_changed_at_unix_ns = 3; // Timestamp of last state change
+  TrustScore trust_score = 4;         // Current trust score of the node
+  map<string, string> metrics = 5;    // Key operational metrics
+  string region = 6;                  // Geographic region of the node
+  string version = 7;                 // Software version of the node
+}
+
+// Cryptographic attestation
+message Attestation {
+  string id = 1;                      // Unique attestation ID
+  bytes data_hash = 2;               // Hash of the data being attested (e.g., SHA3-256)
+  string hash_algorithm = 3;          // Algorithm used for data_hash
+  bytes signature = 4;               // Dilithium signature of the data_hash
+  string signer_id = 5;               // ID of the signer (e.g., node_id, service_id)
+  int64 timestamp_unix_ns = 6;       // Timestamp of attestation (Unix time in nanoseconds)
+  string signature_algorithm = 7;     // Signature algorithm used (e.g., "Dilithium3")
+  string pqc_kem_algorithm = 8;       // PQC KEM used if key was encapsulated (e.g., "Kyber768")
+  int64 key_rotation_id = 9;         // Identifier for key rotation cycle
+  repeated CertificateInfo certificate_chain = 10; // Certificate chain for the signer
+}
+
+// Certificate Information
+message CertificateInfo {
+  bytes certificate_der = 1; // DER-encoded X.509 certificate
+  string issuer_id = 2;
+  string subject_id = 3;
+  int64 not_before_unix_ns = 4;
+  int64 not_after_unix_ns = 5;
+}
+
+
+// Batch metadata, commonly used in ingestion and storage
+message BatchMetadata {
+  string batch_id = 1;
+  string source_id = 2;
+  int64 created_at_unix_ns = 3; // Timestamp when batch was created at source
+  int64 size_bytes = 4;
+  string content_type = 5;        // e.g., "application/vnd.apache.arrow.flight.stream"
+  map<string, string> custom_metadata = 6; // User-defined metadata
+  Attestation source_attestation = 7;    // Attestation from the original source
+  repeated Attestation path_attestations = 8; // Attestations from intermediary nodes
+  Attestation arrival_attestation = 9;   // Attestation upon arrival at BlackIce component
+  TrustScore initial_trust_score = 10;  // Trust score assigned at ingestion
+  string schema_version = 11;           // Version of the data schema
+}
+
+// Merkle Tree Proof
+message MerkleProof {
+  bytes root_hash = 1;
+  repeated MerkleNode path = 2; // Path from leaf to root
+  bytes leaf_hash = 3;
+  string hash_algorithm = 4; // e.g., "SHA3-256"
+}
+
+message MerkleNode {
+  bytes hash = 1;
+  enum Position {
+    LEFT = 0;
+    RIGHT = 1;
+  }
+  Position position = 2;
+}
+
+// Quorum Decision
+message QuorumDecision {
+  string decision_id = 1;
+  bool approved = 2;
+  int32 votes_for = 3;
+  int32 votes_against = 4;
+  int32 total_votes_possible = 5;
+  repeated string participating_members = 6;
+  repeated Attestation member_attestations = 7; // Attestations of each member's vote/input
+  int64 decided_at_unix_ns = 8;
+  string policy_version_used = 9; // Policy that guided this decision
+}
+
+// Configuration for a CRDT
+message CRDTConfig {
+  enum CRDTType {
+    OR_MAP_LWW = 0; // Observed-Remove Map with Last-Writer-Wins
+    // Other CRDT types can be added here
+  }
+  CRDTType type = 1;
+  map<string, string> parameters = 2; // Type-specific parameters
+}
+
+// Entry types for the ledger entries
+enum EntryType {
+  ENTRY_TYPE_UNSPECIFIED = 0;
+  CONFIGURATION_CHANGE = 1;
+  TRUST_SCORE_UPDATE = 2;
+  PANIC_EVENT = 3;
+  KEY_ROTATION = 4;
+  ROLLBACK_OPERATION = 5;
+  SECURITY_POLICY_UPDATE = 6;
+  NODE_STATE_CHANGE = 7;
+  DATA_INGESTION_RECEIPT = 8;
+  DATA_STORAGE_COMMIT = 9;
+  ACCESS_CONTROL_DECISION = 10;
+  CHAOS_TEST_RESULT = 11;
+  COMPLIANCE_EVENT = 12;
+}
+
+// Tamper-evident ledger entry used across services
+message LedgerEntry {
+  uint64 index = 1;                 // Monotonic index of the entry
+  uint64 term = 2;                  // Raft term in which this entry was committed
+  string entry_id = 3;              // Unique ID for this entry (e.g., UUID)
+  EntryType entry_type = 4;         // Type of event being logged
+  bytes payload = 5;                // The actual data/event payload (e.g., serialized operation details)
+  string payload_content_type = 6;  // MIME type of the payload
+  Attestation entry_attestation = 7; // Attestation of this entry by the committer/leader
+  MerkleProof merkle_proof = 8;     // Merkle proof for this entry against the current ledger root
+  int64 committed_at_unix_ns = 9;   // Timestamp of commit
+  string committer_node_id = 10;    // ID of the node that committed this entry
+} 

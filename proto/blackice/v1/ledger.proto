@@ -1,0 +1,152 @@
+syntax = "proto3";
+
+package blackice.v1;
+
+import "blackice/proto/blackice/v1/common.proto";
+
+option go_package = "github.com/TFMV/blackice/proto/blackice/v1;blackicev1";
+
+// LedgerService provides a tamper-evident, auditable log of critical events and state changes.
+// It uses Raft for consensus and Merkle trees for integrity.
+service LedgerService {
+  // AppendEntry appends a new entry to the ledger. Requires consensus.
+  rpc AppendEntry(AppendEntryRequest) returns (AppendEntryResponse);
+
+  // GetEntry retrieves a specific ledger entry by its ID or index.
+  rpc GetEntry(GetEntryRequest) returns (GetEntryResponse);
+
+  // GetEntries retrieves a range of ledger entries.
+  rpc GetEntries(GetEntriesRequest) returns (stream LedgerEntry);
+
+  // VerifyEntry verifies the integrity of a ledger entry using its Merkle proof.
+  rpc VerifyEntry(VerifyEntryRequest) returns (VerificationResponse);
+
+  // GetLedgerState returns the current state of the ledger (e.g., current term, commit index).
+  rpc GetLedgerState(LedgerStateRequest) returns (LedgerStateResponse);
+
+  // ForceReSign (Admin) re-signs ledger entries, e.g., after a master key rotation.
+  // This is a highly privileged operation.
+  rpc ForceReSignEntries(ForceReSignRequest) returns (ForceReSignResponse);
+  
+  // ReplicateEntries is used for internal replication between ledger nodes.
+  // Typically part of the Raft implementation but exposed for monitoring/control.
+  rpc ReplicateEntries(stream LedgerEntry) returns (stream ReplicationAck);
+
+  // RequestVote is part of the Raft consensus protocol.
+  rpc RequestVote(RequestVoteArgs) returns (RequestVoteReply);
+
+  // AppendEntries (Raft) is part of the Raft consensus protocol for log replication.
+  rpc AppendRaftEntries(AppendRaftEntriesArgs) returns (AppendRaftEntriesReply);
+}
+
+message AppendEntryRequest {
+  EntryType entry_type = 1;
+  bytes payload = 2;
+  string payload_content_type = 3;
+  // Client can suggest an ID, server may override if not unique or per policy
+  string client_proposed_entry_id = 4;
+  // Optional: client-side attestation of the payload before sending
+  Attestation client_payload_attestation = 5;
+}
+
+message AppendEntryResponse {
+  Status status = 1;
+  LedgerEntry committed_entry = 2;
+  QuorumDecision consensus_decision = 3; // Details of the Raft consensus for this append
+}
+
+message GetEntryRequest {
+  oneof identifier {
+    uint64 entry_index = 1;
+    string entry_id = 2;
+  }
+  bool include_merkle_proof = 3;
+}
+
+message GetEntryResponse {
+  Status status = 1;
+  LedgerEntry entry = 2;
+}
+
+message GetEntriesRequest {
+  uint64 start_index = 1;
+  uint64 end_index = 2; // Inclusive
+  int32 limit = 3;      // Max number of entries to return
+  bool include_merkle_proofs = 4;
+  EntryType filter_by_type = 5; // Optional: filter entries by type
+}
+
+message VerifyEntryRequest {
+  LedgerEntry entry_to_verify = 1;
+  // If merkle_proof was not included in entry_to_verify, it must be provided here
+  MerkleProof proof_override = 2; 
+}
+
+message VerificationResponse {
+  Status status = 1;
+  bool is_valid = 2;
+  string verification_details = 3; // e.g., "Merkle proof matches root hash X"
+}
+
+message LedgerStateRequest {
+  // No parameters needed for now
+}
+
+message LedgerStateResponse {
+  Status status = 1;
+  uint64 current_term = 2;
+  uint64 last_committed_index = 3;
+  uint64 last_applied_index = 4;
+  string leader_id = 5; // Current Raft leader
+  int32 member_count = 6;
+  repeated NodeHealth members_health = 7;
+  bytes current_root_hash = 8; // Current Merkle root of the entire ledger
+  int64 last_snapshot_index = 9;
+  int64 last_snapshot_term = 10;
+}
+
+message ForceReSignRequest {
+  uint64 start_index = 1;
+  uint64 end_index = 2;
+  string reason = 3;
+  Attestation admin_attestation = 4; // Attestation from admin authorizing this operation
+}
+
+message ForceReSignResponse {
+  Status status = 1;
+  uint64 entries_resigned_count = 2;
+}
+
+message ReplicationAck {
+  uint64 entry_index = 1;
+  Status status = 2;
+  string replicator_node_id = 3;
+}
+
+// Raft specific messages - Simplified for brevity, real Raft needs more fields.
+message RequestVoteArgs {
+  uint64 term = 1;
+  string candidate_id = 2;
+  uint64 last_log_index = 3;
+  uint64 last_log_term = 4;
+}
+
+message RequestVoteReply {
+  uint64 term = 1;
+  bool vote_granted = 2;
+}
+
+message AppendRaftEntriesArgs {
+  uint64 term = 1;
+  string leader_id = 2;
+  uint64 prev_log_index = 3;
+  uint64 prev_log_term = 4;
+  repeated LedgerEntry entries_to_append = 5; // Can be empty for heartbeats
+  uint64 leader_commit_index = 6;
+}
+
+message AppendRaftEntriesReply {
+  uint64 term = 1;
+  bool success = 2;
+  uint64 last_replicated_index = 3; // Index up to which replication was successful
+} 

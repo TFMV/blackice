@@ -1,0 +1,124 @@
+syntax = "proto3";
+
+package blackice.v1;
+
+import "blackice/proto/blackice/v1/common.proto";
+
+option go_package = "github.com/TFMV/blackice/proto/blackice/v1;blackicev1";
+
+// IngestGate Service (Zero-Trust Ingestion Layer)
+// Handles secure ingestion of data streams using Apache Arrow Flight semantics,
+// cryptographic verification (HMAC, PQC signatures), and dynamic trust scoring.
+service IngestGate {
+  // PutBatch ingests a stream of FlightData messages.
+  // Each message in the stream represents a chunk of a larger batch.
+  // The service performs real-time cryptographic verification (HMAC in metadata,
+  // source attestation) and assigns a trust score.
+  // Implements Merkle Stream Verification for sub-batch integrity.
+  rpc PutBatch(stream FlightDataChunk) returns (stream BatchAck);
+
+  // GetSourceTrustScore retrieves the current and historical trust score for a data source.
+  rpc GetSourceTrustScore(SourceTrustRequest) returns (SourceTrustResponse);
+
+  // RegisterSource registers a new data source with the IngestGate.
+  // This includes its public key for attestation verification and initial trust parameters.
+  rpc RegisterSource(SourceRegistrationRequest) returns (SourceRegistrationResponse);
+
+  // UpdateSourceTrust manually updates trust parameters for a data source (admin operation).
+  rpc UpdateSourceTrust(UpdateTrustRequest) returns (SourceTrustResponse);
+
+  // GetIngestionStats provides real-time statistics for the ingestion service.
+  rpc GetIngestionStats(IngestionStatsRequest) returns (IngestionStatsResponse);
+}
+
+// FlightDataChunk represents a piece of an Arrow Flight data batch.
+// Based on requirements for Arrow Flight, HMAC in metadata, and Merkle Stream Verification.
+message FlightDataChunk {
+  BatchMetadata batch_metadata = 1;       // Shared metadata for the entire batch
+  bytes arrow_payload = 2;                // Arrow columnar data payload for this chunk
+  bytes hmac_signature = 3;               // HMAC (e.g., SHA256-HMAC) of arrow_payload + critical metadata
+  string hmac_algorithm = 4;              // Algorithm used for HMAC
+  Attestation chunk_source_attestation = 5; // Attestation for this specific chunk, if applicable
+  int64 sequence_number = 6;              // Sequence number of this chunk within the batch
+  bool is_last_chunk = 7;                 // True if this is the final chunk of the batch
+  MerkleProof merkle_stream_proof = 8;    // Proof for Merkle Stream Verification (if applicable)
+}
+
+// BatchAck is sent back to the client for each processed FlightDataChunk or at the end of a batch.
+message BatchAck {
+  string batch_id = 1;
+  string chunk_id = 2; // Or a general receipt_id if acknowledging the whole batch
+  Status status = 3;
+  TrustScore assigned_trust_score = 4; // Trust score after processing this chunk/batch
+  Attestation arrival_attestation = 5; // BlackIce's attestation of receipt and verification
+  int64 processed_at_unix_ns = 6;
+  map<string, string> processing_details = 7; // e.g., verification steps passed/failed
+}
+
+message SourceTrustRequest {
+  string source_id = 1;
+  bool include_history = 2;
+  int32 history_limit = 3; // Max number of historical scores to return
+}
+
+message SourceTrustResponse {
+  string source_id = 1;
+  TrustScore current_trust_score = 2;
+  repeated TrustScore historical_trust_scores = 3;
+  Status status = 4;
+}
+
+message SourceRegistrationRequest {
+  string source_id = 1; // User-defined unique ID for the source
+  string description = 2;
+  bytes public_key_der = 3; // DER-encoded public key (e.g., Dilithium)
+  string key_algorithm = 4;  // e.g., "Dilithium3"
+  int32 initial_trust_score = 5; // Default: 50
+  map<string, string> source_metadata = 6; // e.g., type, location, owner
+  repeated string expected_content_types = 7;
+  Attestation admin_attestation = 8; // Attestation from an admin authorizing this registration
+}
+
+message SourceRegistrationResponse {
+  string source_id = 1;
+  Status status = 2;
+  int64 registered_at_unix_ns = 3;
+  TrustScore initial_trust_score_assigned = 4;
+}
+
+message UpdateTrustRequest {
+  string source_id = 1;
+  int32 new_trust_score = 2; // Absolute new score, or a delta
+  bool is_delta = 3;         // If true, new_trust_score is added to current
+  string reason = 4;
+  string admin_id = 5;       // ID of the admin performing the update
+  Attestation admin_attestation = 6; // Admin's attestation for this action
+}
+
+message IngestionStatsRequest {
+  bool include_per_source_stats = 1;
+  repeated string source_ids_filter = 2; // If per-source, filter by these IDs
+  int32 window_seconds = 3; // Time window for stats (e.g., last 60s)
+}
+
+message IngestionStatsResponse {
+  Status status = 1;
+  int64 total_batches_processed = 2;
+  int64 total_data_ingested_bytes = 3;
+  double average_latency_ms = 4;
+  double p95_latency_ms = 5;
+  double error_rate_percent = 6;
+  int32 active_connections = 7;
+  map<string, SourceIngestionStats> per_source_stats = 8;
+  NodeHealth service_health = 9;
+  int64 report_generated_at_unix_ns = 10;
+}
+
+message SourceIngestionStats {
+  string source_id = 1;
+  int64 batches_processed = 2;
+  int64 data_ingested_bytes = 3;
+  double average_trust_score = 4;
+  int64 validation_failures = 5;
+  double average_latency_ms = 6;
+} 
