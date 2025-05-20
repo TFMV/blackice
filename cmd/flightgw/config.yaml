@@ -1,0 +1,46 @@
+# BlackIce Flight Gateway Configuration
+
+server:
+  host: "0.0.0.0" # Host to bind the server to
+  port: 8815 # Port to bind the server to
+  tls_cert_path: "certs/server.crt"
+  tls_key_path: "certs/server.key"
+  tls_ca_cert_path: "certs/ca.crt"
+  enable_mtls: false # Enable mutual TLS authentication
+
+client:
+  upstream_host: "localhost" # Upstream Flight service host
+  upstream_port: 8080 # Upstream Flight service port
+  tls_cert_path: "certs/client.crt"
+  tls_key_path: "certs/client.key"
+  tls_ca_cert_path: "certs/ca.crt"
+  disable_tls_verify: false # Disable TLS verification for development
+  connect_timeout: "10s" # Connection timeout
+  request_timeout: "30s" # Request timeout
+
+security:
+  enable_hmac: true # Enable HMAC verification
+  hmac_algorithm: "SHA256" # HMAC algorithm to use
+  hmac_secret_path: "secrets/hmac_secret.key"
+  enable_attestations: true # Enable attestation verification
+  enable_merkle_verify: true # Enable Merkle stream verification
+  min_trust_score: 50 # Minimum allowed trust score
+  trust_score_threshold: 75 # Trust score threshold for trusted sources
+
+logging:
+  level: "info" # Log level (debug, info, warn, error)
+  format: "console" # Log format (console, json)
+  timestamp_format: "RFC3339"
+  output_paths:
+    - "stdout"
+    - "logs/flightgw.log"
+  file: "logs/flightgw.log" # Specific log file path
+  enable_json: false # Use plain text for console, true for structured JSON
+  enable_trace: true # Include trace IDs in logs
+
+proxy:
+  mode: "trust-boundary" # Operational mode (pass-through, trust-boundary, transform)
+  enable_metrics: true # Enable metrics collection
+  metrics_addr: ":9090" # Metrics endpoint address
+  admin_api_enabled: true # Enable admin API
+  admin_api_addr: ":9091" # Admin API endpoint address
