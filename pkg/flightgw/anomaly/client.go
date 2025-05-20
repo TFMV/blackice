@@ -26,6 +26,7 @@ type Client struct {
 	ctx         context.Context
 	cancel      context.CancelFunc
 	reconnectCh chan struct{}
+	wg          sync.WaitGroup // Added for managing background goroutines
 }
 
 // ClientConfig contains the configuration for the anomaly client
@@ -36,6 +37,8 @@ type ClientConfig struct {
 	ReconnectDelay  time.Duration
 	TLSEnabled      bool
 	RetentionPolicy RetentionPolicy
+	// Added field for message size configuration
+	MaxMessageSizeMB int
 }
 
 // RetentionPolicy defines how events are retained when the service is unavailable
@@ -48,17 +51,21 @@ const (
 	DropNewest RetentionPolicy = "drop_newest"
 	// DropAll drops all events when the buffer is full
 	DropAll RetentionPolicy = "drop_all"
+
+	// Default message size limit
+	DefaultMaxMessageSizeMB = 64
 )
 
 // DefaultClientConfig returns a default configuration for the anomaly client
 func DefaultClientConfig() *ClientConfig {
 	return &ClientConfig{
-		ServiceAddress:  "localhost:8089",
-		BufferSize:      1000,
-		FlushInterval:   5 * time.Second,
-		ReconnectDelay:  5 * time.Second,
-		TLSEnabled:      false,
-		RetentionPolicy: DropOldest,
+		ServiceAddress:   "localhost:8089",
+		BufferSize:       1000,
+		FlushInterval:    5 * time.Second,
+		ReconnectDelay:   5 * time.Second,
+		TLSEnabled:       false,
+		RetentionPolicy:  DropOldest,
+		MaxMessageSizeMB: DefaultMaxMessageSizeMB,
 	}
 }
 
@@ -78,22 +85,45 @@ func NewClient(config *ClientConfig) (*Client, error) {
 	}
 
 	// Attempt initial connection
-	if err := client.connect(); err != nil {
+	if err := client.connect(config.MaxMessageSizeMB); err != nil {
 		log.Warn().Err(err).Str("address", config.ServiceAddress).Msg("Failed to connect to anomaly service, will retry")
 		// Trigger reconnection attempt
 		client.triggerReconnect()
 	}
 
 	// Start background goroutines
-	go client.reconnectLoop(config.ReconnectDelay)
-	go client.flushLoop(config.FlushInterval)
+	client.wg.Add(2) // Track background goroutines
+	go func() {
+		defer client.wg.Done()
+		client.reconnectLoop(config.ReconnectDelay)
+	}()
+	go func() {
+		defer client.wg.Done()
+		client.flushLoop(config.FlushInterval)
+	}()
 
 	return client, nil
 }
 
-// Close closes the client connection
+// Close closes the client connection and waits for background goroutines to finish
 func (c *Client) Close() error {
-	c.cancel()
+	c.cancel() // Signal all goroutines to stop
+
+	// Wait for all background goroutines to finish with a timeout
+	done := make(chan struct{})
+	go func() {
+		c.wg.Wait()
+		close(done)
+	}()
+
+	// Wait with timeout
+	select {
+	case <-done:
+		// All goroutines finished
+	case <-time.After(5 * time.Second):
+		log.Warn().Msg("Timed out waiting for background goroutines to finish")
+	}
+
 	if c.conn != nil {
 		return c.conn.Close()
 	}
@@ -101,27 +131,26 @@ func (c *Client) Close() error {
 }
 
 // connect establishes a connection to the anomaly service
-func (c *Client) connect() error {
+func (c *Client) connect(maxMessageSizeMB int) error {
 	// For Arrow Flight services, we need to properly configure the connection
-	// with appropriate timeouts
-	_, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	// Note: WithBlock and WithTimeout options are no longer supported with Dial
+	// and should be handled at the RPC level instead
 
-	// Configure connection options according to best practices for Arrow Flight
-	opts := []grpc.DialOption{
+	// Convert MB to bytes for message size limits
+	maxMsgSize := maxMessageSizeMB * 1024 * 1024
+
+	// Configure connection options according to gRPC v2 best practices
+	dialOptions := []grpc.DialOption{
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		// We're intentionally using these deprecated options until we migrate to gRPC v2
-		// which will require broader API changes
 		grpc.WithDefaultCallOptions(
-			grpc.MaxCallRecvMsgSize(64*1024*1024), // 64MB message size for large data transfers
-			grpc.MaxCallSendMsgSize(64*1024*1024),
+			grpc.MaxCallRecvMsgSize(maxMsgSize),
+			grpc.MaxCallSendMsgSize(maxMsgSize),
 		),
 	}
 
-	// Connect using the appropriate method based on gRPC version
-	// TODO: Migrate to grpc.NewClient in the future as part of a broader gRPC v2 migration
-	//nolint:all // Using deprecated DialContext until migration to grpc v2 (SA1019)
-	conn, err := grpc.NewClient(c.address, opts...)
+	// Connect using the newer NewClient method instead of Dial
+	// Note: Non-blocking by default - connections happen in the background
+	conn, err := grpc.NewClient(c.address, dialOptions...)
 	if err != nil {
 		return fmt.Errorf("failed to connect to anomaly service: %w", err)
 	}
@@ -143,7 +172,7 @@ func (c *Client) reconnectLoop(delay time.Duration) {
 		case <-c.reconnectCh:
 			if !c.connected {
 				log.Info().Str("address", c.address).Msg("Attempting to reconnect to anomaly service")
-				if err := c.connect(); err != nil {
+				if err := c.connect(DefaultMaxMessageSizeMB); err != nil {
 					log.Error().Err(err).Str("address", c.address).Msg("Failed to reconnect to anomaly service")
 					time.Sleep(delay)
 					c.triggerReconnect()
@@ -170,24 +199,33 @@ func (c *Client) flushLoop(interval time.Duration) {
 	for {
 		select {
 		case <-c.ctx.Done():
+			// Do one final flush attempt before exiting
+			if c.connected {
+				if err := c.flushBuffer(); err != nil {
+					log.Error().Err(err).Msg("Failed to flush buffer during shutdown")
+				}
+			}
 			return
 		case <-ticker.C:
 			if c.connected {
-				c.flushBuffer()
+				if err := c.flushBuffer(); err != nil {
+					log.Error().Err(err).Msg("Failed to flush buffer during periodic flush")
+				}
 			}
 		}
 	}
 }
 
 // flushBuffer sends buffered events to the service
-func (c *Client) flushBuffer() {
+// Returns an error if the flush operation failed
+func (c *Client) flushBuffer() error {
 	// Use atomic operations for better performance
 	c.bufferMu.Lock()
 
 	// Quick check if buffer is empty
 	if c.bufferSize == 0 {
 		c.bufferMu.Unlock()
-		return
+		return nil
 	}
 
 	// Create a copy of the buffer for processing
@@ -201,11 +239,12 @@ func (c *Client) flushBuffer() {
 
 	// Nothing to send after all
 	if len(events) == 0 {
-		return
+		return nil
 	}
 
 	// Process events in batches if there are many
 	const batchSize = 100 // Maximum batch size for each send operation
+	var lastError error
 
 	// Send in batches for better reliability
 	for i := 0; i < len(events); i += batchSize {
@@ -234,10 +273,15 @@ func (c *Client) flushBuffer() {
 			c.connected = false
 			c.triggerReconnect()
 
+			// Store the error to return
+			lastError = err
+
 			// Stop processing further batches after failure
 			break
 		}
 	}
+
+	return lastError
 }
 
 // sendEventBatch sends a batch of events to the anomaly service
@@ -308,7 +352,11 @@ func (c *Client) SendEvent(event *TelemetryEvent) error {
 
 	// If buffer is getting full, trigger immediate flush
 	if bufferSize >= c.maxBuffer/2 {
-		go c.flushBuffer()
+		go func() {
+			if err := c.flushBuffer(); err != nil {
+				log.Error().Err(err).Msg("Failed to flush buffer")
+			}
+		}()
 	}
 
 	return nil
@@ -328,7 +376,11 @@ func (c *Client) QueryAnomalies(ctx context.Context, startTime, endTime time.Tim
 		MinSeverityFilter:       blackicev1.Anomaly_Severity(minSeverity),
 	}
 
-	resp, err := c.client.QueryAnomalies(ctx, req)
+	// Use the client context as parent to ensure cancelation works
+	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	resp, err := c.client.QueryAnomalies(callCtx, req)
 	if err != nil {
 		c.connected = false
 		c.triggerReconnect()
@@ -355,7 +407,11 @@ func (c *Client) GetAnomalyDetails(ctx context.Context, anomalyID string) (*Anom
 		AnomalyId: anomalyID,
 	}
 
-	resp, err := c.client.GetAnomalyDetails(ctx, req)
+	// Use the client context as parent to ensure cancelation works
+	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	resp, err := c.client.GetAnomalyDetails(callCtx, req)
 	if err != nil {
 		c.connected = false
 		c.triggerReconnect()
@@ -377,7 +433,11 @@ func (c *Client) GetDetectorStatus(ctx context.Context, detectorIDs []string) ([
 		DetectorIds: detectorIDs,
 	}
 
-	resp, err := c.client.GetDetectorStatus(ctx, req)
+	// Use the client context as parent to ensure cancelation works
+	callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	resp, err := c.client.GetDetectorStatus(callCtx, req)
 	if err != nil {
 		c.connected = false
 		c.triggerReconnect()

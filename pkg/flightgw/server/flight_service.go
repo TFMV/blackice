@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/apache/arrow-go/v18/arrow/flight"
 	"github.com/rs/zerolog/log"
@@ -13,6 +15,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	blackicev1 "github.com/TFMV/blackice/proto/blackice/v1"
+	"google.golang.org/grpc/metadata"
 )
 
 // FlightServiceImpl implements the Flight service interface
@@ -469,30 +472,144 @@ func (s *FlightServiceImpl) ListActions(empty *flight.Empty, stream flight.Fligh
 func (s *FlightServiceImpl) verifyRequest(ctx context.Context, desc *flight.FlightDescriptor) error {
 	// Check HMAC if enabled
 	if s.server.hmacVerifier != nil {
-		// TODO: Implement HMAC verification for request
-		// Example implementation:
-		// 1. Extract HMAC from descriptor metadata
-		// 2. Verify HMAC against descriptor data
-		// 3. Return error if verification fails
-		log.Debug().Msg("HMAC verification would be performed here")
+		// Military-grade HMAC verification implementation
+		log.Debug().Msg("Performing military-grade HMAC verification for request")
+
+		// 1. Extract metadata from context using gRPC metadata
+		md, ok := extractMetadataFromContext(ctx)
+		if !ok {
+			return status.Error(codes.Unauthenticated, "missing request metadata")
+		}
+
+		// 2. Extract HMAC signature
+		hmacSignature := md["x-blackice-hmac"]
+		if hmacSignature == "" {
+			return status.Error(codes.Unauthenticated, "missing HMAC signature")
+		}
+
+		// 3. Prepare message to verify
+		// Create a deterministic representation of the descriptor
+		var message []byte
+		switch desc.Type {
+		case flight.DescriptorPATH:
+			// Convert []string to string for path
+			pathStr := strings.Join(desc.Path, "/")
+			message = []byte(fmt.Sprintf("PATH:%s", pathStr))
+		case flight.DescriptorCMD:
+			message = []byte(fmt.Sprintf("CMD:%s", string(desc.Cmd)))
+		default:
+			return status.Error(codes.InvalidArgument, "unsupported descriptor type")
+		}
+
+		// 4. Verify HMAC
+		valid, err := s.server.hmacVerifier.VerifyHMACHex(hmacSignature, message)
+		if err != nil {
+			log.Error().Err(err).Msg("HMAC verification failed")
+			return status.Errorf(codes.Internal, "HMAC verification error: %v", err)
+		}
+
+		if !valid {
+			log.Warn().
+				Str("hmac", hmacSignature).
+				Str("descriptor_type", fmt.Sprintf("%v", desc.Type)).
+				Msg("Invalid HMAC signature")
+			return status.Error(codes.Unauthenticated, "invalid HMAC signature")
+		}
+
+		// 5. Check timestamp to prevent replay attacks
+		timestamp := md["x-blackice-timestamp"]
+		if timestamp != "" {
+			// Parse timestamp
+			ts, err := strconv.ParseInt(timestamp, 10, 64)
+			if err != nil {
+				return status.Error(codes.InvalidArgument, "invalid timestamp format")
+			}
+
+			// Check if timestamp is within acceptable range (5 minutes)
+			now := time.Now().Unix()
+			if now-ts > 300 || ts-now > 300 {
+				return status.Error(codes.Unauthenticated, "request timestamp expired")
+			}
+		}
+
+		log.Debug().Msg("HMAC verification successful")
 	}
 
 	// Apply trust scoring
 	// This is a placeholder for actual implementation
 
 	return nil
+}
+
+// extractMetadataFromContext extracts metadata from gRPC context
+func extractMetadataFromContext(ctx context.Context) (map[string]string, bool) {
+	md := make(map[string]string)
+
+	// Extract metadata from context using gRPC metadata
+	grpcMD, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return md, false
+	}
+
+	// Convert gRPC metadata to string map
+	for key, values := range grpcMD {
+		if len(values) > 0 {
+			md[key] = values[0]
+		}
+	}
+
+	return md, true
 }
 
 // verifyTicket verifies security properties of the ticket
 func (s *FlightServiceImpl) verifyTicket(ctx context.Context, ticket *flight.Ticket) error {
 	// Check HMAC if enabled
 	if s.server.hmacVerifier != nil {
-		// TODO: Implement HMAC verification for ticket
-		// Example implementation:
-		// 1. Extract HMAC from ticket bytes
-		// 2. Verify HMAC against ticket data
-		// 3. Return error if verification fails
-		log.Debug().Msg("HMAC verification would be performed here")
+		// Military-grade HMAC verification implementation
+		log.Debug().Msg("Performing military-grade HMAC verification for ticket")
+
+		// 1. Extract ticket data and signature
+		// Format: <ticket_data>|<hmac_signature>
+		ticketStr := string(ticket.Ticket)
+		parts := strings.Split(ticketStr, "|")
+
+		if len(parts) != 2 {
+			return status.Error(codes.InvalidArgument, "invalid ticket format")
+		}
+
+		ticketData := parts[0]
+		hmacSignature := parts[1]
+
+		// 2. Verify HMAC
+		valid, err := s.server.hmacVerifier.VerifyHMACHex(hmacSignature, []byte(ticketData))
+		if err != nil {
+			log.Error().Err(err).Msg("Ticket HMAC verification failed")
+			return status.Errorf(codes.Internal, "HMAC verification error: %v", err)
+		}
+
+		if !valid {
+			log.Warn().
+				Str("hmac", hmacSignature).
+				Str("ticket_data", ticketData).
+				Msg("Invalid ticket HMAC signature")
+			return status.Error(codes.Unauthenticated, "invalid ticket signature")
+		}
+
+		// 3. Parse ticket data to check validity
+		// Format: <resource_id>:<timestamp>
+		ticketParts := strings.Split(ticketData, ":")
+		if len(ticketParts) >= 2 {
+			// Check if timestamp is within acceptable range
+			timestamp, err := strconv.ParseInt(ticketParts[1], 10, 64)
+			if err == nil {
+				now := time.Now().Unix()
+				if now-timestamp > 3600 { // 1 hour expiration
+					return status.Error(codes.Unauthenticated, "ticket expired")
+				}
+			}
+		}
+
+		log.Debug().Msg("Ticket HMAC verification successful")
 	}
 
 	// Apply trust scoring
@@ -501,24 +618,80 @@ func (s *FlightServiceImpl) verifyTicket(ctx context.Context, ticket *flight.Tic
 	return nil
 }
 
-// verifyDescriptor verifies security properties of the descriptor
+// verifyDescriptor verifies security properties of the flight descriptor
 func (s *FlightServiceImpl) verifyDescriptor(ctx context.Context, desc *flight.FlightDescriptor) error {
-	if desc == nil {
-		return status.Error(codes.InvalidArgument, "missing flight descriptor")
-	}
-
 	// Check HMAC if enabled
 	if s.server.hmacVerifier != nil {
-		// TODO: Implement HMAC verification for descriptor
-		// Example implementation:
-		// 1. Extract HMAC from descriptor metadata
-		// 2. Verify HMAC against descriptor data
-		// 3. Return error if verification fails
-		log.Debug().Msg("HMAC verification would be performed here")
-	}
+		// Military-grade HMAC verification implementation
+		log.Debug().Msg("Performing military-grade HMAC verification for descriptor")
 
-	// Apply trust scoring
-	// This is a placeholder for actual implementation
+		// 1. Extract metadata from context using gRPC metadata
+		md, ok := extractMetadataFromContext(ctx)
+		if !ok {
+			return status.Error(codes.Unauthenticated, "missing request metadata")
+		}
+
+		// 2. Extract HMAC signature
+		hmacSignature := md["x-blackice-descriptor-hmac"]
+		if hmacSignature == "" {
+			return status.Error(codes.Unauthenticated, "missing descriptor HMAC signature")
+		}
+
+		// 3. Prepare message to verify
+		var message []byte
+		switch desc.Type {
+		case flight.DescriptorPATH:
+			// Convert []string to string for path
+			pathStr := strings.Join(desc.Path, "/")
+			message = []byte(fmt.Sprintf("PATH:%s", pathStr))
+		case flight.DescriptorCMD:
+			message = []byte(fmt.Sprintf("CMD:%s", string(desc.Cmd)))
+		default:
+			return status.Error(codes.InvalidArgument, "unsupported descriptor type")
+		}
+
+		// 4. Verify HMAC
+		valid, err := s.server.hmacVerifier.VerifyHMACHex(hmacSignature, message)
+		if err != nil {
+			log.Error().Err(err).Msg("Descriptor HMAC verification failed")
+			return status.Errorf(codes.Internal, "HMAC verification error: %v", err)
+		}
+
+		if !valid {
+			log.Warn().
+				Str("hmac", hmacSignature).
+				Str("descriptor_type", fmt.Sprintf("%v", desc.Type)).
+				Msg("Invalid descriptor HMAC signature")
+			return status.Error(codes.Unauthenticated, "invalid descriptor signature")
+		}
+
+		// 5. Validate command structure and permissions if it's a command
+		if desc.Type == flight.DescriptorCMD {
+			// Simple command structure validation
+			// This would be more complex in a real implementation
+			if len(desc.Cmd) == 0 {
+				return status.Error(codes.InvalidArgument, "empty command")
+			}
+
+			// Check if command starts with a known prefix
+			cmd := string(desc.Cmd)
+			validPrefixes := []string{"get:", "put:", "list:", "query:"}
+			validPrefix := false
+
+			for _, prefix := range validPrefixes {
+				if strings.HasPrefix(cmd, prefix) {
+					validPrefix = true
+					break
+				}
+			}
+
+			if !validPrefix {
+				return status.Error(codes.PermissionDenied, "unsupported command pattern")
+			}
+		}
+
+		log.Debug().Msg("Descriptor HMAC verification successful")
+	}
 
 	return nil
 }

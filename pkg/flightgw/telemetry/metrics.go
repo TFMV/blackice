@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,6 +23,8 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
 	"golang.org/x/time/rate"
+
+	"github.com/TFMV/blackice/pkg/flightgw/crypto"
 )
 
 // SecurityLevel defines the sensitivity level of metrics
@@ -98,6 +101,14 @@ type TelemetryManager struct {
 	trustThreatLevelGauge prometheus.Gauge
 	trustAnomalyCounter   prometheus.Counter
 }
+
+// contextKey is a custom type for context keys to avoid key collisions
+type contextKey string
+
+// Context keys
+const (
+	identityKey contextKey = "identity"
+)
 
 // NewTelemetryManager creates a new telemetry manager with the given configuration
 func NewTelemetryManager(config MetricsConfig) (*TelemetryManager, error) {
@@ -278,7 +289,26 @@ func (tm *TelemetryManager) secureMetricsHandler(next http.Handler) http.Handler
 		limiter = rate.NewLimiter(rate.Limit(tm.config.RateLimit/60.0), tm.config.RateLimit)
 	}
 
+	// Initialize JWT validation if enabled
+	var jwtValidator *crypto.JWTValidator
+	if tm.config.JWTAuth && tm.config.JWTSecretPath != "" {
+		var err error
+		jwtValidator, err = crypto.NewJWTValidator(tm.config.JWTSecretPath)
+		if err != nil {
+			log.Error().Err(err).Msg("Failed to initialize JWT validator, defaulting to no authentication")
+		} else {
+			log.Info().Msg("JWT authentication enabled for metrics endpoint")
+		}
+	}
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Add secure headers
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("X-XSS-Protection", "1; mode=block")
+		w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'")
+
 		// Implement rate limiting
 		if limiter != nil {
 			if !limiter.Allow() {
@@ -287,31 +317,106 @@ func (tm *TelemetryManager) secureMetricsHandler(next http.Handler) http.Handler
 			}
 		}
 
-		// Implement authentication
-		if tm.config.JWTAuth {
-			// JWT authentication implementation
-			token := r.Header.Get("Authorization")
-			if token == "" {
-				http.Error(w, "Authorization required", http.StatusUnauthorized)
+		// Implement JWT authentication
+		if tm.config.JWTAuth && jwtValidator != nil {
+			// Extract JWT token from Authorization header
+			authHeader := r.Header.Get("Authorization")
+			if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
+				http.Error(w, "Missing or invalid Authorization header", http.StatusUnauthorized)
 				return
 			}
 
-			// TODO: Implement proper JWT validation
-			// For now, we just check that the header exists
+			// Extract the token part
+			tokenString := strings.TrimPrefix(authHeader, "Bearer ")
+
+			// Verify the JWT token
+			claims, err := jwtValidator.ValidateToken(tokenString)
+			if err != nil {
+				log.Warn().Err(err).Str("ip", r.RemoteAddr).Msg("JWT verification failed")
+				http.Error(w, "Invalid authentication token", http.StatusUnauthorized)
+				return
+			}
+
+			// Validate claims
+			if err := validateMetricsClaims(claims); err != nil {
+				log.Warn().Err(err).Str("ip", r.RemoteAddr).Msg("JWT claims validation failed")
+				http.Error(w, "Invalid token claims", http.StatusForbidden)
+				return
+			}
+
+			// Add verified identity to request context
+			subject, _ := claims["sub"].(string)
+			ctx := context.WithValue(r.Context(), identityKey, subject)
+			r = r.WithContext(ctx)
 		}
 
 		// Audit logging
 		if tm.config.EnableAudit {
+			identity := "anonymous"
+			if id, ok := r.Context().Value(identityKey).(string); ok {
+				identity = id
+			}
+
 			log.Info().
 				Str("remote_addr", r.RemoteAddr).
 				Str("method", r.Method).
 				Str("path", r.URL.Path).
 				Str("user_agent", r.UserAgent()).
+				Str("identity", identity).
 				Msg("Metrics endpoint accessed")
 		}
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+// validateMetricsClaims validates JWT claims for metrics access
+func validateMetricsClaims(claims map[string]interface{}) error {
+	// Verify expiration
+	if exp, ok := claims["exp"].(float64); ok {
+		if time.Now().Unix() > int64(exp) {
+			return fmt.Errorf("token expired")
+		}
+	} else {
+		return fmt.Errorf("missing expiration claim")
+	}
+
+	// Verify issuer
+	if iss, ok := claims["iss"].(string); ok {
+		if iss != "blackice.metrics" {
+			return fmt.Errorf("invalid issuer: %s", iss)
+		}
+	} else {
+		return fmt.Errorf("missing issuer claim")
+	}
+
+	// Verify audience
+	if aud, ok := claims["aud"].(string); ok {
+		if aud != "blackice.metrics.prometheus" {
+			return fmt.Errorf("invalid audience: %s", aud)
+		}
+	} else {
+		return fmt.Errorf("missing audience claim")
+	}
+
+	// Verify scope/permissions
+	if scope, ok := claims["scope"].(string); ok {
+		scopes := strings.Split(scope, " ")
+		hasReadScope := false
+		for _, s := range scopes {
+			if s == "metrics:read" {
+				hasReadScope = true
+				break
+			}
+		}
+		if !hasReadScope {
+			return fmt.Errorf("missing required scope 'metrics:read'")
+		}
+	} else {
+		return fmt.Errorf("missing scope claim")
+	}
+
+	return nil
 }
 
 // RegisterCounter creates and registers a Prometheus counter

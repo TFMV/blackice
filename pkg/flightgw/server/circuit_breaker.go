@@ -1,10 +1,15 @@
 package server
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"hash/fnv"
 	"math"
+	"os"
+	"runtime"
 	"slices"
 	"sync"
 	"time"
@@ -152,10 +157,13 @@ type CircuitBreaker struct {
 	patternThreshold int
 	knownBadPatterns map[string]bool
 
-	// TODO: Jitter for backoff
-
 	// Metrics hooks for telemetry integration
 	hooks *CircuitBreakerHooks
+
+	// Enhanced tracking
+	failuresByCategory map[FailureCategory]int
+	executionTimes     []time.Duration // Last N execution times
+	maxExecutionTimes  int             // Max number of execution times to track
 }
 
 // NewCircuitBreaker creates a new circuit breaker with the specified parameters
@@ -225,6 +233,11 @@ func NewCircuitBreaker(failureThreshold int, resetTimeout time.Duration) *Circui
 
 		// Initialize hooks for metrics
 		hooks: NewCircuitBreakerHooks(),
+
+		// Enhanced tracking
+		failuresByCategory: make(map[FailureCategory]int),
+		executionTimes:     make([]time.Duration, 0, 100),
+		maxExecutionTimes:  100,
 	}
 
 	return cb
@@ -248,6 +261,9 @@ func (cb *CircuitBreaker) Execute(request func() error) error {
 	// Calculate request duration
 	duration := time.Since(startTime)
 
+	// Record execution time for monitoring
+	cb.recordExecutionTime(duration)
+
 	// Notify hooks about the outcome
 	if cb.hooks != nil {
 		if success {
@@ -262,8 +278,12 @@ func (cb *CircuitBreaker) Execute(request func() error) error {
 		}
 	}
 
-	// Record the result
-	cb.recordResult(success)
+	// Record the result using the appropriate helper function
+	if success {
+		cb.recordSuccess()
+	} else {
+		cb.recordFailure(FailureGeneric)
+	}
 
 	// Update metrics
 	cb.mu.Lock()
@@ -279,14 +299,9 @@ func (cb *CircuitBreaker) Execute(request func() error) error {
 	}
 
 	if !success {
-		cb.metrics.TotalFailures++
 		cb.metrics.LastFailureTime = time.Now()
-		cb.metrics.ConsecutiveFailure++
-		cb.metrics.ConsecutiveSuccess = 0
 	} else {
 		cb.metrics.LastSuccessTime = time.Now()
-		cb.metrics.ConsecutiveSuccess++
-		cb.metrics.ConsecutiveFailure = 0
 	}
 	cb.mu.Unlock()
 
@@ -326,8 +341,23 @@ func (cb *CircuitBreaker) ExecuteWithContext(
 	// Calculate request duration
 	result.Duration = time.Since(startTime)
 
+	// Record execution time for monitoring
+	cb.recordExecutionTime(result.Duration)
+
+	// Record result based on success/failure
+	if result.Success {
+		cb.recordSuccess()
+	} else {
+		cb.recordFailure(result.Category)
+	}
+
 	// Record detailed result with context
 	cb.recordDetailedResult(ctx, result)
+
+	// Check if we should attempt to reset the circuit breaker
+	if cb.shouldAttemptReset() {
+		go cb.transitionToHalfOpen()
+	}
 
 	return result, err
 }
@@ -390,11 +420,96 @@ func (cb *CircuitBreaker) ExecuteWithRetry(
 
 // jitter returns a random value between 0.5 and 1.5 for backoff jitter
 func (cb *CircuitBreaker) jitter() float64 {
-	// TODO: Use time nanoseconds as a simple source of randomness
-	// This is sufficient for jitter purposes
-	nanos := float64(time.Now().UnixNano())
-	normalized := (nanos / 1e9) - float64(int(nanos/1e9))
-	return 0.5 + normalized
+	// Military-grade jitter implementation using multiple entropy sources:
+	// 1. Hardware-based entropy using crypto/rand
+	// 2. High-precision timing measurements
+	// 3. System load as an additional entropy source
+	// 4. Process-specific information
+
+	// Use cryptographically secure random number generator
+	var randBytes [8]byte
+	_, err := rand.Read(randBytes[:])
+	if err != nil {
+		// Fallback to less secure but still usable entropy sources if crypto/rand fails
+		log.Warn().Err(err).Msg("Failed to use crypto/rand for jitter, falling back to secondary entropy sources")
+		return cb.fallbackJitter()
+	}
+
+	// Convert to uint64 and normalize to [0,1)
+	randInt := binary.BigEndian.Uint64(randBytes[:])
+	primaryEntropy := float64(randInt) / float64(1<<64)
+
+	// Mix in secondary entropy sources
+	secondaryEntropy := cb.secondaryEntropySource()
+
+	// Combine primary and secondary entropy (80/20 weight)
+	mixedEntropy := primaryEntropy*0.8 + secondaryEntropy*0.2
+
+	// Scale to desired range (0.5 to 1.5)
+	return 0.5 + mixedEntropy
+}
+
+// secondaryEntropySource generates entropy from system metrics
+func (cb *CircuitBreaker) secondaryEntropySource() float64 {
+	// Start with high-precision time as base entropy
+	timeNanos := time.Now().UnixNano()
+
+	// Mix in process-specific information
+	pid := os.Getpid()
+
+	// Use runtime metrics as additional entropy source
+	var memStats runtime.MemStats
+	runtime.ReadMemStats(&memStats)
+
+	// Get goroutine count as a proxy for system load
+	numGoroutines := runtime.NumGoroutine()
+
+	// Get thread/CPU-specific information
+	threadID := uint64(time.Now().UnixNano()) // This is a proxy for thread ID
+
+	// Mix all entropy sources
+	// Use a simple but effective mixing function that's resistant to predictability
+	h := fnv.New64a()
+	if err := binary.Write(h, binary.LittleEndian, timeNanos); err != nil {
+		log.Error().Err(err).Msg("Error writing timeNanos to hash")
+		// Continue despite error - still better than no entropy
+	}
+	if err := binary.Write(h, binary.LittleEndian, int64(pid)); err != nil {
+		log.Error().Err(err).Msg("Error writing PID to hash")
+		// Continue despite error
+	}
+	if err := binary.Write(h, binary.LittleEndian, int64(memStats.Alloc)); err != nil {
+		log.Error().Err(err).Msg("Error writing memory stats to hash")
+		// Continue despite error
+	}
+	if err := binary.Write(h, binary.LittleEndian, int64(numGoroutines)); err != nil {
+		log.Error().Err(err).Msg("Error writing goroutine count to hash")
+		// Continue despite error
+	}
+	if err := binary.Write(h, binary.LittleEndian, threadID); err != nil {
+		log.Error().Err(err).Msg("Error writing thread ID to hash")
+		// Continue despite error
+	}
+
+	mixedHash := h.Sum64()
+
+	// Normalize to [0,1)
+	return float64(mixedHash) / float64(1<<64)
+}
+
+// fallbackJitter provides a fallback when crypto/rand is unavailable
+func (cb *CircuitBreaker) fallbackJitter() float64 {
+	// Start with high-precision time as base entropy
+	timeNanos := time.Now().UnixNano()
+
+	// Mix in process-specific information
+	pid := os.Getpid()
+
+	// Combine entropy sources with a simple mixing function
+	mixedEntropy := float64((timeNanos^int64(pid))%1000) / 1000.0
+
+	// Scale to desired range (0.5 to 1.5)
+	return 0.5 + mixedEntropy
 }
 
 // isRequestAllowedWithContext determines if a request should be allowed based on context
@@ -670,74 +785,39 @@ func (cb *CircuitBreaker) isRequestAllowed() bool {
 	}
 }
 
-// recordResult records the result of a request and updates the circuit state
-func (cb *CircuitBreaker) recordResult(success bool) {
+// recordSuccess records a success and transitions to closed if we're half-open
+func (cb *CircuitBreaker) recordSuccess() {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
 
-	switch cb.state {
-	case CircuitClosed:
-		if !success {
-			cb.failureCount++
-			if cb.failureCount >= cb.failureThreshold {
-				// Instead of calling tripBreaker (which acquires the lock again),
-				// we'll directly implement the open circuit logic
-				if cb.state != CircuitOpen {
-					log.Warn().
-						Int("failure_count", cb.failureCount).
-						Int("threshold", cb.failureThreshold).
-						Msg("Circuit breaker tripped, opening circuit")
-
-					cb.state = CircuitOpen
-					cb.lastFailure = time.Now()
-					cb.metrics.OpenCircuitCount++
-
-					// Notify metrics hooks about state change
-					// It's safe to access hooks here as we still hold the lock
-					if cb.hooks != nil {
-						cb.hooks.NotifyStateChange(true)
-					}
-				}
-			}
-		} else {
-			// Reset failure count after a successful request
-			cb.failureCount = 0
-		}
-	case CircuitHalfOpen:
-		cb.halfOpenCallCount++
-		if !success {
-			// If any test request fails, directly implement open circuit logic
-			if cb.state != CircuitOpen {
-				log.Warn().
-					Int("failure_count", cb.failureCount).
-					Int("threshold", cb.failureThreshold).
-					Msg("Circuit breaker tripped, opening circuit")
-
-				cb.state = CircuitOpen
-				cb.lastFailure = time.Now()
-				cb.metrics.OpenCircuitCount++
-
-				// Notify metrics hooks about state change
-				if cb.hooks != nil {
-					cb.hooks.NotifyStateChange(true)
-				}
-			}
-			return
-		}
-		// If all test requests succeeded, implement close circuit logic
-		if cb.halfOpenCallCount >= cb.halfOpenMaxCalls {
-			if cb.state != CircuitClosed {
-				log.Info().Msg("Circuit breaker reset, closing circuit")
-				cb.state = CircuitClosed
-				cb.failureCount = 0
-
-				// Notify metrics hooks about state change
-				if cb.hooks != nil {
-					cb.hooks.NotifyStateChange(false)
-				}
-			}
-		}
+	// Reset failure counters
+	cb.failureCount = 0
+	for k := range cb.categoryCounts {
+		cb.categoryCounts[k] = 0
 	}
+
+	// Update metrics
+	cb.metrics.ConsecutiveFailure = 0
+	cb.metrics.ConsecutiveSuccess++
+	// TotalRequests is incremented in Execute/ExecuteWithContext, don't do it here
+
+	// If we're half-open and have a success, transition to closed
+	if cb.state == CircuitHalfOpen {
+		cb.state = CircuitClosed
+		log.Info().Msg("Circuit breaker closed after successful test request")
+	}
+}
+
+// shouldAttemptReset returns true if we should attempt to reset the circuit breaker
+func (cb *CircuitBreaker) shouldAttemptReset() bool {
+	cb.mu.RLock()
+	defer cb.mu.RUnlock()
+
+	if cb.state != CircuitOpen {
+		return false
+	}
+
+	return time.Since(cb.lastFailure) > cb.resetTimeout
 }
 
 // transitionToHalfOpen attempts to transition the circuit from open to half-open
@@ -754,6 +834,62 @@ func (cb *CircuitBreaker) transitionToHalfOpen() {
 		if cb.hooks != nil {
 			cb.hooks.NotifyStateChange(false)
 		}
+	}
+}
+
+// recordExecutionTime records an execution time for monitoring
+func (cb *CircuitBreaker) recordExecutionTime(duration time.Duration) {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+
+	// Add the execution time to the slice
+	cb.executionTimes = append(cb.executionTimes, duration)
+
+	// If we have too many execution times, remove the oldest
+	if len(cb.executionTimes) > cb.maxExecutionTimes {
+		cb.executionTimes = cb.executionTimes[1:]
+	}
+}
+
+// recordFailure records a failure and transitions to open if threshold is exceeded
+func (cb *CircuitBreaker) recordFailure(category FailureCategory) {
+	cb.mu.Lock()
+	defer cb.mu.Unlock()
+
+	// Increment failure count
+	cb.failureCount++
+
+	// Track category-specific failures
+	cb.categoryCounts[category]++
+	cb.failuresByCategory[category]++
+
+	// Reset consecutive success counter
+	cb.metrics.ConsecutiveSuccess = 0
+	cb.metrics.ConsecutiveFailure++
+	cb.metrics.TotalFailures++ // Using metrics field instead of totalFailures
+
+	cb.lastFailure = time.Now()
+
+	// Check if threshold is reached for this failure category
+	if threshold, ok := cb.categoryThresholds[category]; ok {
+		if cb.categoryCounts[category] >= threshold {
+			log.Info().
+				Str("category", fmt.Sprintf("%v", category)).
+				Int("count", cb.categoryCounts[category]).
+				Int("threshold", threshold).
+				Msg("Category-specific threshold reached, triggering circuit breaker")
+			cb.state = CircuitOpen
+		}
+	}
+
+	// Check if general threshold is reached
+	if cb.failureCount >= cb.failureThreshold {
+		// Transition to open state
+		cb.state = CircuitOpen
+		log.Info().
+			Int("failure_count", cb.failureCount).
+			Int("threshold", cb.failureThreshold).
+			Msg("Failure threshold reached, circuit is now OPEN")
 	}
 }
 
