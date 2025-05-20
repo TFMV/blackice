@@ -10,8 +10,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/apache/arrow/go/v18/arrow"
-	"github.com/apache/arrow/go/v18/arrow/flight"
+	"github.com/apache/arrow-go/v18/arrow"
+	"github.com/apache/arrow-go/v18/arrow/flight"
 	"github.com/rs/zerolog/log"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -235,8 +235,8 @@ func (s *SecureFlightServer) Stop() {
 	log.Info().Msg("Secure Flight Gateway stopped")
 }
 
-// createServerTLSConfig creates a TLS configuration for the server
-func createServerTLSConfig(certPath, keyPath, caPath string, enableMTLS bool) (*tls.Config, error) {
+// CreateServerTLSConfig creates a TLS configuration for the server
+func CreateServerTLSConfig(certPath, keyPath, caPath string, enableMTLS bool) (*tls.Config, error) {
 	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load TLS key pair: %w", err)
@@ -268,7 +268,7 @@ func createServerTLSConfig(certPath, keyPath, caPath string, enableMTLS bool) (*
 }
 
 // createClientTLSConfig creates a TLS configuration for the client
-func createClientTLSConfig(certPath, keyPath, caPath string, skipVerify bool) (*tls.Config, error) {
+func CreateClientTLSConfig(certPath, keyPath, caPath string, skipVerify bool) (*tls.Config, error) {
 	var certificates []tls.Certificate
 
 	if certPath != "" && keyPath != "" {

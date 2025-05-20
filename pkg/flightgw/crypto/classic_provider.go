@@ -93,7 +93,8 @@ func (p *ClassicProvider) Sign(privateKeyData []byte, algorithm Algorithm, data 
 		if !ok {
 			return nil, fmt.Errorf("key is not an RSA private key")
 		}
-		signature, err = rsa.SignPSS(nil, rsaKey, crypto.SHA256, hashed, nil)
+		// Use rand.Reader explicitly (instead of nil) for RSA-PSS
+		signature, err = rsa.SignPSS(rand.Reader, rsaKey, crypto.SHA256, hashed, nil)
 		if err != nil {
 			return nil, fmt.Errorf("error signing with RSA-PSS: %w", err)
 		}
@@ -103,7 +104,7 @@ func (p *ClassicProvider) Sign(privateKeyData []byte, algorithm Algorithm, data 
 		if !ok {
 			return nil, fmt.Errorf("key is not an ECDSA private key")
 		}
-		signature, err = ecdsa.SignASN1(nil, ecdsaKey, hashed)
+		signature, err = ecdsa.SignASN1(rand.Reader, ecdsaKey, hashed)
 		if err != nil {
 			return nil, fmt.Errorf("error signing with ECDSA: %w", err)
 		}
@@ -125,7 +126,7 @@ func (p *ClassicProvider) Sign(privateKeyData []byte, algorithm Algorithm, data 
 // Verify verifies a signature
 func (p *ClassicProvider) Verify(publicKeyData []byte, algorithm Algorithm, data []byte, signature []byte) (bool, error) {
 	// Parse public key
-	publicKey, err := parsePublicKey(publicKeyData)
+	publicKey, err := ParsePublicKey(publicKeyData)
 	if err != nil {
 		return false, fmt.Errorf("failed to parse public key: %w", err)
 	}

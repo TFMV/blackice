@@ -88,6 +88,26 @@ func (v *AttestationVerifier) VerifyAttestation(
 		return false, fmt.Errorf("attestation timestamp is in the future")
 	}
 
+	// First verify that the data hash matches
+	hashValid, err := v.VerifyDataHash(attestation, data)
+	if err != nil {
+		return false, fmt.Errorf("failed to verify data hash: %w", err)
+	}
+	if !hashValid {
+		return false, fmt.Errorf("data hash verification failed")
+	}
+
+	// Calculate hash of data to verify signature
+	// This matches the CreateAttestation behavior
+	var dataHash []byte
+	switch attestation.HashAlgorithm {
+	case "SHA256":
+		h := sha256.Sum256(data)
+		dataHash = h[:]
+	default:
+		return false, fmt.Errorf("unsupported hash algorithm: %s", attestation.HashAlgorithm)
+	}
+
 	// Verify signature
 	switch attestation.GetSignatureAlgorithm() {
 	case SignatureAlgorithmRSAPKCS1SHA256, SignatureAlgorithmRSAPSSSHA256,
@@ -97,7 +117,7 @@ func (v *AttestationVerifier) VerifyAttestation(
 		if err != nil {
 			return false, fmt.Errorf("failed to get classic provider: %w", err)
 		}
-		return provider.Verify(publicKey, Algorithm(attestation.GetSignatureAlgorithm()), data, attestation.GetSignature())
+		return provider.Verify(publicKey, Algorithm(attestation.GetSignatureAlgorithm()), dataHash, attestation.GetSignature())
 
 	case SignatureAlgorithmDilithium:
 		// Post-quantum algorithm
@@ -105,7 +125,7 @@ func (v *AttestationVerifier) VerifyAttestation(
 		if err != nil {
 			return false, fmt.Errorf("failed to get post-quantum provider: %w", err)
 		}
-		return provider.Verify(publicKey, Algorithm(AlgorithmDilithium3), data, attestation.GetSignature())
+		return provider.Verify(publicKey, Algorithm(AlgorithmDilithium3), dataHash, attestation.GetSignature())
 
 	case SignatureAlgorithmHybrid:
 		// Hybrid algorithm
@@ -113,7 +133,7 @@ func (v *AttestationVerifier) VerifyAttestation(
 		if err != nil {
 			return false, fmt.Errorf("failed to get hybrid provider: %w", err)
 		}
-		return provider.Verify(publicKey, Algorithm(AlgorithmHybridDilithiumED25519), data, attestation.GetSignature())
+		return provider.Verify(publicKey, Algorithm(AlgorithmHybridDilithiumED25519), dataHash, attestation.GetSignature())
 
 	default:
 		return false, fmt.Errorf("unsupported signature algorithm: %s", attestation.GetSignatureAlgorithm())
@@ -259,9 +279,9 @@ func (v *AttestationVerifier) VerifyDataHash(attestation *blackicev1.Attestation
 	return hex.EncodeToString(computedHash) == hex.EncodeToString(attestation.DataHash), nil
 }
 
-// verifyRSAPKCS1Signature verifies an RSA PKCS1v15 signature
-func verifyRSAPKCS1Signature(publicKeyPEM, signature, data []byte, hash crypto.Hash) (bool, error) {
-	publicKey, err := parsePublicKey(publicKeyPEM)
+// VerifyRSAPKCS1Signature verifies an RSA PKCS1v15 signature
+func VerifyRSAPKCS1Signature(publicKeyPEM, signature, data []byte, hash crypto.Hash) (bool, error) {
+	publicKey, err := ParsePublicKey(publicKeyPEM)
 	if err != nil {
 		return false, fmt.Errorf("failed to parse public key: %w", err)
 	}
@@ -292,9 +312,9 @@ func verifyRSAPKCS1Signature(publicKeyPEM, signature, data []byte, hash crypto.H
 	return true, nil
 }
 
-// verifyRSAPSSSignature verifies an RSA PSS signature
-func verifyRSAPSSSignature(publicKeyPEM, signature, data []byte, hash crypto.Hash) (bool, error) {
-	publicKey, err := parsePublicKey(publicKeyPEM)
+// VerifyRSAPSSSignature verifies an RSA PSS signature
+func VerifyRSAPSSSignature(publicKeyPEM, signature, data []byte, hash crypto.Hash) (bool, error) {
+	publicKey, err := ParsePublicKey(publicKeyPEM)
 	if err != nil {
 		return false, fmt.Errorf("failed to parse public key: %w", err)
 	}
@@ -325,9 +345,9 @@ func verifyRSAPSSSignature(publicKeyPEM, signature, data []byte, hash crypto.Has
 	return true, nil
 }
 
-// verifyECDSASignature verifies an ECDSA signature
-func verifyECDSASignature(publicKeyPEM, signature, data []byte, hash crypto.Hash) (bool, error) {
-	publicKey, err := parsePublicKey(publicKeyPEM)
+// VerifyECDSASignature verifies an ECDSA signature
+func VerifyECDSASignature(publicKeyPEM, signature, data []byte, hash crypto.Hash) (bool, error) {
+	publicKey, err := ParsePublicKey(publicKeyPEM)
 	if err != nil {
 		return false, fmt.Errorf("failed to parse public key: %w", err)
 	}
@@ -353,9 +373,9 @@ func verifyECDSASignature(publicKeyPEM, signature, data []byte, hash crypto.Hash
 	return valid, nil
 }
 
-// verifyEd25519Signature verifies an Ed25519 signature
-func verifyEd25519Signature(publicKeyPEM, signature, data []byte) (bool, error) {
-	publicKey, err := parsePublicKey(publicKeyPEM)
+// VerifyEd25519Signature verifies an Ed25519 signature
+func VerifyEd25519Signature(publicKeyPEM, signature, data []byte) (bool, error) {
+	publicKey, err := ParsePublicKey(publicKeyPEM)
 	if err != nil {
 		return false, fmt.Errorf("failed to parse public key: %w", err)
 	}
@@ -369,8 +389,8 @@ func verifyEd25519Signature(publicKeyPEM, signature, data []byte) (bool, error) 
 	return valid, nil
 }
 
-// parsePublicKey parses a PEM encoded public key
-func parsePublicKey(keyPEM []byte) (interface{}, error) {
+// ParsePublicKey parses a PEM encoded public key
+func ParsePublicKey(keyPEM []byte) (interface{}, error) {
 	block, _ := pem.Decode(keyPEM)
 	if block == nil {
 		return nil, fmt.Errorf("failed to parse PEM block")
