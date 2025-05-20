@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -79,8 +80,11 @@ func NewSecureFlightServer(cfg *config.Config) (*SecureFlightServer, error) {
 			versionInfo:   "1.0.0", // Replace with actual version from build
 			detailedState: make(map[string]interface{}),
 		},
-		// Initialize the circuit breaker with a threshold of 5 failures and a 30 second reset timeout
-		circuitBreaker: NewCircuitBreaker(5, 30*time.Second),
+		// Initialize the military-grade circuit breaker
+		circuitBreaker: NewMilitaryGradeCircuitBreaker(map[string]interface{}{
+			"failure_threshold": 5,
+			"reset_timeout":     30 * time.Second,
+		}),
 		// Initialize the policy manager
 		policyManager: NewPolicyManager("config/policies.json"),
 	}
@@ -555,7 +559,75 @@ func (s *SecureFlightServer) handleMetrics(w http.ResponseWriter, r *http.Reques
 
 // executeWithCircuitBreaker runs the given function with circuit breaker protection
 func (s *SecureFlightServer) executeWithCircuitBreaker(action func() error) error {
-	return s.circuitBreaker.Execute(action)
+	return s.executeWithCircuitBreakerContext(nil, action)
+}
+
+// executeWithCircuitBreakerContext runs the given function with enhanced circuit breaker protection
+// and provides context information for more intelligent failure handling
+func (s *SecureFlightServer) executeWithCircuitBreakerContext(
+	ctx *RequestContext,
+	action func() error,
+) error {
+	if ctx == nil {
+		ctx = &RequestContext{
+			Category:   "default",
+			Priority:   5, // Default medium priority
+			Timeout:    time.Second * 30,
+			MaxRetries: 0,
+		}
+	}
+
+	result, err := s.circuitBreaker.ExecuteWithContext(ctx, func() (ExecuteResult, error) {
+		startTime := time.Now()
+		err := action()
+		duration := time.Since(startTime)
+
+		// Categorize failure if one occurred
+		category := FailureGeneric
+		if err != nil {
+			errStr := err.Error()
+
+			// Categorize common error types
+			switch {
+			case strings.Contains(errStr, "deadline exceeded") || strings.Contains(errStr, "timeout"):
+				category = FailureTimeout
+			case strings.Contains(errStr, "connection refused") || strings.Contains(errStr, "no route to host"):
+				category = FailureConnection
+			case strings.Contains(errStr, "tls") || strings.Contains(errStr, "certificate"):
+				category = FailureSecurity
+			case strings.Contains(errStr, "permission denied") || strings.Contains(errStr, "unauthorized"):
+				category = FailureSecurity
+			case strings.Contains(errStr, "bad request") || strings.Contains(errStr, "invalid"):
+				category = FailureBadRequest
+			case strings.Contains(errStr, "too many requests") || strings.Contains(errStr, "rate limit"):
+				category = FailureRejection
+			case strings.Contains(errStr, "internal server error"):
+				category = FailureInternal
+			}
+		}
+
+		return ExecuteResult{
+			Success:      err == nil,
+			Duration:     duration,
+			ErrorMessage: fmt.Sprintf("%v", err),
+			Category:     category,
+		}, err
+	})
+
+	// Update health status with circuit breaker info
+	s.healthStatus.mu.Lock()
+	s.healthStatus.detailedState["circuit_breaker"] = s.circuitBreaker.Snapshot()
+	if !result.Success {
+		s.healthStatus.detailedState["last_failure"] = map[string]interface{}{
+			"timestamp": time.Now().Format(time.RFC3339),
+			"category":  fmt.Sprintf("%v", result.Category),
+			"message":   result.ErrorMessage,
+			"duration":  result.Duration.String(),
+		}
+	}
+	s.healthStatus.mu.Unlock()
+
+	return err
 }
 
 // getUpstreamInfo executes GetFlightInfo on the upstream client with circuit breaker protection

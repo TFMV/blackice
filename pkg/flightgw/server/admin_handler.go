@@ -4,12 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strings"
+	"strconv"
+	"time"
 
 	"github.com/rs/zerolog/log"
 )
 
-// AdminHandler handles admin API requests
+// AdminHandler provides HTTP handlers for admin operations
 type AdminHandler struct {
 	server *SecureFlightServer
 }
@@ -21,218 +22,295 @@ func NewAdminHandler(server *SecureFlightServer) *AdminHandler {
 	}
 }
 
-// StartAdminAPI starts the admin API endpoint
+// StartAdminAPI starts the admin HTTP API server
 func (s *SecureFlightServer) StartAdminAPI() error {
-	if s.cfg.Proxy.AdminAPIEnabled {
-		adminHandler := NewAdminHandler(s)
-
-		// Create HTTP mux for admin API
-		mux := http.NewServeMux()
-
-		// Policy management endpoints
-		mux.HandleFunc("/api/policies", adminHandler.handlePolicies)
-		mux.HandleFunc("/api/policies/", adminHandler.handlePolicy)
-
-		// Circuit breaker management
-		mux.HandleFunc("/api/circuit-breaker", adminHandler.handleCircuitBreaker)
-
-		// Start the admin API server in the background
-		addr := s.cfg.Proxy.AdminAPIAddr
-		if addr == "" {
-			addr = ":9091" // default to port 9091
-		}
-
-		adminServer := &http.Server{Addr: addr, Handler: mux}
-		go func() {
-			log.Info().Str("addr", addr).Msg("Starting admin API endpoint")
-			if err := adminServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				log.Error().Err(err).Msg("Admin API server failed")
-			}
-		}()
-	} else {
-		log.Info().Msg("Admin API disabled")
+	if s.adminServer != nil {
+		return fmt.Errorf("admin API already running")
 	}
+
+	// Create admin handler
+	adminHandler := NewAdminHandler(s)
+
+	// Create HTTP mux for admin API
+	mux := http.NewServeMux()
+
+	// Circuit breaker endpoints
+	mux.HandleFunc("/admin/circuit/state", adminHandler.handleCircuitState)
+	mux.HandleFunc("/admin/circuit/force", adminHandler.handleCircuitForceState)
+	mux.HandleFunc("/admin/circuit/tier", adminHandler.handleCircuitTier)
+	mux.HandleFunc("/admin/circuit/metrics", adminHandler.handleCircuitMetrics)
+	mux.HandleFunc("/admin/circuit/failures", adminHandler.handleCircuitFailures)
+	mux.HandleFunc("/admin/circuit/recovery", adminHandler.handleCircuitRecovery)
+
+	// Policy endpoints
+	mux.HandleFunc("/admin/policies", adminHandler.handlePolicies)
+	mux.HandleFunc("/admin/policies/reload", adminHandler.handlePolicyReload)
+
+	// Start the admin server in the background
+	addr := s.cfg.Proxy.AdminAPIAddr
+	if addr == "" {
+		addr = ":9091" // default to port 9091
+	}
+	s.adminServer = &http.Server{Addr: addr, Handler: mux}
+	go func() {
+		log.Info().Str("addr", addr).Msg("Starting admin API")
+		if err := s.adminServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Error().Err(err).Msg("Admin API server failed")
+		}
+	}()
 
 	return nil
 }
 
-// handlePolicies handles requests to /api/policies
+// handleCircuitState returns the current state of the circuit breaker
+func (h *AdminHandler) handleCircuitState(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	state := h.server.circuitBreaker.GetState()
+	tier := h.server.circuitBreaker.GetTier()
+	snapshot := h.server.circuitBreaker.Snapshot()
+
+	w.Header().Set("Content-Type", "application/json")
+	response := map[string]interface{}{
+		"state":     fmt.Sprintf("%v", state),
+		"tier":      fmt.Sprintf("%v", tier),
+		"details":   snapshot,
+		"timestamp": time.Now().Format(time.RFC3339),
+	}
+
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		log.Error().Err(err).Msg("Failed to encode circuit state as JSON")
+	}
+}
+
+// handleCircuitForceState forces the circuit breaker into a specific state
+func (h *AdminHandler) handleCircuitForceState(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Parse the requested state from the URL query parameter
+	stateParam := r.URL.Query().Get("state")
+	if stateParam == "" {
+		http.Error(w, "Missing state parameter", http.StatusBadRequest)
+		return
+	}
+
+	var message string
+	switch stateParam {
+	case "open":
+		h.server.circuitBreaker.ForceOpen()
+		message = "Circuit forced OPEN"
+	case "closed":
+		h.server.circuitBreaker.ForceClose()
+		message = "Circuit forced CLOSED"
+	default:
+		http.Error(w, "Invalid state parameter (use 'open' or 'closed')", http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	response := map[string]string{
+		"status":    "success",
+		"message":   message,
+		"timestamp": time.Now().Format(time.RFC3339),
+	}
+
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		log.Error().Err(err).Msg("Failed to encode response as JSON")
+	}
+}
+
+// handleCircuitTier sets the circuit breaker tier
+func (h *AdminHandler) handleCircuitTier(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Parse the requested tier from the URL query parameter
+	tierParam := r.URL.Query().Get("tier")
+	if tierParam == "" {
+		http.Error(w, "Missing tier parameter", http.StatusBadRequest)
+		return
+	}
+
+	// Convert tier string to integer
+	tierInt, err := strconv.Atoi(tierParam)
+	if err != nil || tierInt < 0 || tierInt > 4 {
+		http.Error(w, "Invalid tier parameter (use 0-4)", http.StatusBadRequest)
+		return
+	}
+
+	h.server.circuitBreaker.SetTier(CircuitTier(tierInt))
+
+	w.Header().Set("Content-Type", "application/json")
+	response := map[string]string{
+		"status":    "success",
+		"message":   fmt.Sprintf("Circuit tier set to %d", tierInt),
+		"timestamp": time.Now().Format(time.RFC3339),
+	}
+
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		log.Error().Err(err).Msg("Failed to encode response as JSON")
+	}
+}
+
+// handleCircuitMetrics returns detailed metrics from the circuit breaker
+func (h *AdminHandler) handleCircuitMetrics(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	metrics := h.server.circuitBreaker.GetMetrics()
+
+	w.Header().Set("Content-Type", "application/json")
+	response := map[string]interface{}{
+		"metrics":   metrics,
+		"timestamp": time.Now().Format(time.RFC3339),
+	}
+
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		log.Error().Err(err).Msg("Failed to encode circuit metrics as JSON")
+	}
+}
+
+// handleCircuitFailures returns recent failures recorded by the circuit breaker
+func (h *AdminHandler) handleCircuitFailures(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	failures := h.server.circuitBreaker.GetRecentFailures()
+	patterns := h.server.circuitBreaker.DetectAttackPatterns()
+
+	w.Header().Set("Content-Type", "application/json")
+	response := map[string]interface{}{
+		"failures":        failures,
+		"attack_patterns": patterns,
+		"timestamp":       time.Now().Format(time.RFC3339),
+	}
+
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		log.Error().Err(err).Msg("Failed to encode circuit failures as JSON")
+	}
+}
+
+// handleCircuitRecovery manages self-healing capabilities
+func (h *AdminHandler) handleCircuitRecovery(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	action := r.URL.Query().Get("action")
+	if action == "" {
+		http.Error(w, "Missing action parameter", http.StatusBadRequest)
+		return
+	}
+
+	var message string
+	switch action {
+	case "enable":
+		h.server.circuitBreaker.ActivateSelfHealing(true)
+		message = "Self-healing enabled"
+	case "disable":
+		h.server.circuitBreaker.ActivateSelfHealing(false)
+		message = "Self-healing disabled"
+	case "heal":
+		h.server.circuitBreaker.SelfHeal()
+		message = "Manual healing triggered"
+	default:
+		http.Error(w, "Invalid action parameter (use 'enable', 'disable', or 'heal')", http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	response := map[string]string{
+		"status":    "success",
+		"message":   message,
+		"timestamp": time.Now().Format(time.RFC3339),
+	}
+
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		log.Error().Err(err).Msg("Failed to encode response as JSON")
+	}
+}
+
+// handlePolicies manages security policies
 func (h *AdminHandler) handlePolicies(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		h.listPolicies(w, r)
-	case http.MethodPost:
-		h.createPolicy(w, r)
-	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-	}
-}
-
-// handlePolicy handles requests to /api/policies/{name}
-func (h *AdminHandler) handlePolicy(w http.ResponseWriter, r *http.Request) {
-	// Extract policy name from URL
-	parts := strings.Split(r.URL.Path, "/")
-	if len(parts) < 3 {
-		http.Error(w, "Invalid URL", http.StatusBadRequest)
-		return
-	}
-
-	policyName := parts[len(parts)-1]
-
-	switch r.Method {
-	case http.MethodGet:
-		h.getPolicy(w, r, policyName)
-	case http.MethodPut:
-		h.updatePolicy(w, r, policyName)
-	case http.MethodDelete:
-		h.deletePolicy(w, r, policyName)
-	default:
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-	}
-}
-
-// listPolicies retrieves all policies
-func (h *AdminHandler) listPolicies(w http.ResponseWriter, r *http.Request) {
-	// Get policy type filter from query parameter
-	policyType := r.URL.Query().Get("type")
-
-	var policies []*Policy
-	if policyType != "" {
-		// Filter by type
-		policies = h.server.policyManager.GetPoliciesByType(PolicyType(policyType))
-	} else {
-		// Get all policies
-		pm := h.server.policyManager
-		pm.mu.RLock()
-		for _, p := range pm.policies {
-			policies = append(policies, p)
-		}
-		pm.mu.RUnlock()
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(policies); err != nil {
-		log.Error().Err(err).Msg("Failed to encode policies as JSON")
-	}
-}
-
-// getPolicy retrieves a specific policy
-func (h *AdminHandler) getPolicy(w http.ResponseWriter, r *http.Request, name string) {
-	policy, exists := h.server.policyManager.GetPolicy(name)
-	if !exists {
-		http.Error(w, fmt.Sprintf("Policy %s not found", name), http.StatusNotFound)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(policy); err != nil {
-		log.Error().Err(err).Msg("Failed to encode policy as JSON")
-	}
-}
-
-// createPolicy creates a new policy
-func (h *AdminHandler) createPolicy(w http.ResponseWriter, r *http.Request) {
-	var policy Policy
-	if err := json.NewDecoder(r.Body).Decode(&policy); err != nil {
-		http.Error(w, fmt.Sprintf("Invalid policy JSON: %v", err), http.StatusBadRequest)
-		return
-	}
-
-	if policy.Name == "" {
-		http.Error(w, "Policy name is required", http.StatusBadRequest)
-		return
-	}
-
-	if err := h.server.policyManager.UpdatePolicy(&policy); err != nil {
-		http.Error(w, fmt.Sprintf("Failed to create policy: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	if err := json.NewEncoder(w).Encode(policy); err != nil {
-		log.Error().Err(err).Msg("Failed to encode policy as JSON")
-	}
-}
-
-// updatePolicy updates an existing policy
-func (h *AdminHandler) updatePolicy(w http.ResponseWriter, r *http.Request, name string) {
-	var policy Policy
-	if err := json.NewDecoder(r.Body).Decode(&policy); err != nil {
-		http.Error(w, fmt.Sprintf("Invalid policy JSON: %v", err), http.StatusBadRequest)
-		return
-	}
-
-	// Ensure name in URL matches name in body
-	if policy.Name != name {
-		http.Error(w, "Policy name in URL must match policy name in request body", http.StatusBadRequest)
-		return
-	}
-
-	if err := h.server.policyManager.UpdatePolicy(&policy); err != nil {
-		http.Error(w, fmt.Sprintf("Failed to update policy: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(policy); err != nil {
-		log.Error().Err(err).Msg("Failed to encode policy as JSON")
-	}
-}
-
-// deletePolicy deletes a policy
-func (h *AdminHandler) deletePolicy(w http.ResponseWriter, r *http.Request, name string) {
-	if deleted := h.server.policyManager.DeletePolicy(name); !deleted {
-		http.Error(w, fmt.Sprintf("Policy %s not found", name), http.StatusNotFound)
-		return
-	}
-
-	w.WriteHeader(http.StatusNoContent)
-}
-
-// handleCircuitBreaker handles requests to /api/circuit-breaker
-func (h *AdminHandler) handleCircuitBreaker(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodGet:
-		// Get circuit breaker status
-		status := map[string]interface{}{
-			"state": fmt.Sprintf("%v", h.server.circuitBreaker.GetState()),
-		}
+	if r.Method == http.MethodGet {
+		// Return current policies
+		policies := h.server.policyManager.GetAllPolicies()
 
 		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(status); err != nil {
-			log.Error().Err(err).Msg("Failed to encode circuit breaker status as JSON")
+		response := map[string]interface{}{
+			"policies":  policies,
+			"timestamp": time.Now().Format(time.RFC3339),
 		}
 
-	case http.MethodPost:
-		// Update circuit breaker state
-		var req struct {
-			Action string `json:"action"` // "open" or "close"
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			log.Error().Err(err).Msg("Failed to encode policies as JSON")
 		}
+		return
+	}
 
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, fmt.Sprintf("Invalid request: %v", err), http.StatusBadRequest)
+	if r.Method == http.MethodPost {
+		// Update a policy
+		var policy Policy
+		if err := json.NewDecoder(r.Body).Decode(&policy); err != nil {
+			http.Error(w, "Invalid policy format: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 
-		switch req.Action {
-		case "open":
-			h.server.circuitBreaker.ForceOpen()
-			w.WriteHeader(http.StatusOK)
-			if _, err := w.Write([]byte(`{"status":"circuit opened"}`)); err != nil {
-				log.Error().Err(err).Msg("Failed to write response")
-			}
-		case "close":
-			h.server.circuitBreaker.ForceClose()
-			w.WriteHeader(http.StatusOK)
-			if _, err := w.Write([]byte(`{"status":"circuit closed"}`)); err != nil {
-				log.Error().Err(err).Msg("Failed to write response")
-			}
-		default:
-			http.Error(w, "Invalid action, must be 'open' or 'close'", http.StatusBadRequest)
+		if err := h.server.policyManager.UpdatePolicy(&policy); err != nil {
+			http.Error(w, "Failed to update policy: "+err.Error(), http.StatusInternalServerError)
+			return
 		}
 
-	default:
+		w.Header().Set("Content-Type", "application/json")
+		response := map[string]string{
+			"status":    "success",
+			"message":   "Policy updated",
+			"timestamp": time.Now().Format(time.RFC3339),
+		}
+
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			log.Error().Err(err).Msg("Failed to encode response as JSON")
+		}
+		return
+	}
+
+	http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+}
+
+// handlePolicyReload reloads policies from disk
+func (h *AdminHandler) handlePolicyReload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	err := h.server.policyManager.LoadPolicies()
+	if err != nil {
+		http.Error(w, "Failed to reload policies: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	response := map[string]string{
+		"status":    "success",
+		"message":   "Policies reloaded",
+		"timestamp": time.Now().Format(time.RFC3339),
+	}
+
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		log.Error().Err(err).Msg("Failed to encode response as JSON")
 	}
 }
