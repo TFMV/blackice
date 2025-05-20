@@ -4,6 +4,7 @@ package anomaly
 import (
 	"fmt"
 	"math"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -748,14 +749,15 @@ func matchesPattern(sequence, pattern []string) (bool, []int) {
 		return false, nil
 	}
 
-	// For simple case, check if pattern is a suffix of sequence
+	// First, check for the simple exact suffix matching case
 	isMatch := true
-	indices := make([]int, len(pattern))
+	suffixIndices := make([]int, len(pattern))
 
 	for i := 0; i < len(pattern); i++ {
 		seqIdx := len(sequence) - len(pattern) + i
-		indices[i] = seqIdx
+		suffixIndices[i] = seqIdx
 
+		// Skip wildcard checks in the initial suffix check
 		if pattern[i] != "*" && pattern[i] != sequence[seqIdx] {
 			isMatch = false
 			break
@@ -763,12 +765,116 @@ func matchesPattern(sequence, pattern []string) (bool, []int) {
 	}
 
 	if isMatch {
-		return true, indices
+		return true, suffixIndices
 	}
 
-	// TODO: Implement more sophisticated pattern matching with wildcards
+	// Advanced pattern matching with wildcards and flexible positioning
+	// Implements a dynamic programming approach for pattern matching
 
-	return false, nil
+	// Special cases for patterns with wildcards
+	hasWildcards := false
+	for _, p := range pattern {
+		if p == "*" || strings.Contains(p, "?") || strings.Contains(p, "*") {
+			hasWildcards = true
+			break
+		}
+	}
+
+	if !hasWildcards {
+		// No wildcards, so we can use more efficient algorithms
+
+		// Try to find the pattern anywhere in the sequence using sliding window
+		for startPos := 0; startPos <= len(sequence)-len(pattern); startPos++ {
+			isMatch = true
+			indices := make([]int, len(pattern))
+
+			for i := 0; i < len(pattern); i++ {
+				seqIdx := startPos + i
+				indices[i] = seqIdx
+
+				if pattern[i] != sequence[seqIdx] {
+					isMatch = false
+					break
+				}
+			}
+
+			if isMatch {
+				return true, indices
+			}
+		}
+
+		return false, nil
+	}
+
+	// Handle advanced wildcard patterns
+
+	// DP table: dp[i][j] = true if pattern[0..i-1] matches sequence[0..j-1]
+	dp := make([][]bool, len(pattern)+1)
+	for i := range dp {
+		dp[i] = make([]bool, len(sequence)+1)
+	}
+
+	// Empty pattern matches empty sequence
+	dp[0][0] = true
+
+	// Handle patterns that start with "*" (can match empty sequence)
+	for i := 1; i <= len(pattern); i++ {
+		if pattern[i-1] == "*" {
+			dp[i][0] = dp[i-1][0]
+		}
+	}
+
+	// Fill the DP table
+	for i := 1; i <= len(pattern); i++ {
+		p := pattern[i-1]
+		for j := 1; j <= len(sequence); j++ {
+			s := sequence[j-1]
+
+			if p == "*" {
+				// "*" can match zero or more of any character
+				dp[i][j] = dp[i-1][j] || dp[i][j-1] || dp[i-1][j-1]
+			} else if p == "?" || p == s {
+				// "?" matches exactly one of any character, or exact match
+				dp[i][j] = dp[i-1][j-1]
+			} else if strings.Contains(p, "*") || strings.Contains(p, "?") {
+				// Handle complex wildcards within a pattern element using regex
+				// Convert the wildcard pattern to regex
+				regexPattern := "^" + strings.Replace(strings.Replace(p, "*", ".*", -1), "?", ".", -1) + "$"
+				re, err := regexp.Compile(regexPattern)
+				if err == nil && re.MatchString(s) {
+					dp[i][j] = dp[i-1][j-1]
+				}
+			} else {
+				dp[i][j] = false
+			}
+		}
+	}
+
+	// Check if pattern matches
+	if !dp[len(pattern)][len(sequence)] {
+		return false, nil
+	}
+
+	// Reconstruct the match indices
+	indices := make([]int, len(pattern))
+	i, j := len(pattern), len(sequence)
+
+	// Start from the end and work backwards
+	for idx := len(pattern) - 1; idx >= 0; idx-- {
+		if pattern[idx] == "*" {
+			// For "*", find the earliest position it can match
+			for j > 0 && dp[idx][j] {
+				j--
+			}
+			j++ // Move back to valid position
+		}
+
+		indices[idx] = j - 1
+		i--
+		j--
+	}
+
+	return true, indices
 }
 
 // RegisterStandardDetectors registers a standard set of anomaly detectors with the service

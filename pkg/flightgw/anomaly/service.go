@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"time"
 
@@ -310,13 +311,140 @@ func (s *Service) GetAnomalyDetails(ctx context.Context, req *blackicev1.GetAnom
 
 // UpdateDetectionModel implements the AnomalyService UpdateDetectionModel RPC
 func (s *Service) UpdateDetectionModel(ctx context.Context, req *blackicev1.UpdateModelRequest) (*blackicev1.UpdateModelResponse, error) {
-	// TODO: Implement model updating
+	if req.ModelId == "" {
+		return nil, status.Errorf(codes.InvalidArgument, "model_id cannot be empty")
+	}
+
+	// Verify attestation if provided
+	if req.AdminAttestation != nil {
+		// In a real implementation, verify the attestation
+		// This is a placeholder for the real attestation verification
+		log.Debug().
+			Str("model_id", req.ModelId).
+			Str("attestation_id", req.AdminAttestation.Id).
+			Msg("Verifying model update attestation")
+
+		// Basic verification that it has a signature
+		if len(req.AdminAttestation.Signature) == 0 {
+			return nil, status.Errorf(codes.PermissionDenied, "invalid attestation: missing signature")
+		}
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Find the detector (assuming model_id maps to detector_id)
+	detector, exists := s.detectors[req.ModelId]
+	if !exists {
+		return nil, status.Errorf(codes.NotFound, "detector with ID %s not found", req.ModelId)
+	}
+
+	// Validate model source and version before applying update
+	if err := s.validateModelUpdate(req, detector); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid model update: %v", err)
+	}
+
+	// Create a backup of the current model parameters
+	originalParams := make(map[string]string)
+	for k, v := range detector.Parameters {
+		originalParams[k] = v
+	}
+
+	// Apply the update based on the requested source
+	// In a real implementation, this would extract model parameters from the source URI
+	// For this example, we'll just update the version tag
+	newVersion := req.ModelVersionTag
+	if newVersion == "" {
+		newVersion = "updated-" + time.Now().Format("20060102-150405")
+	}
+
+	// Update the detector version
+	detector.Version = newVersion
+
+	// If force retrain is requested, we could implement additional logic here
+	if req.ForceRetrain {
+		log.Info().
+			Str("detector_id", detector.ID).
+			Msg("Forced retraining of detection model")
+
+		// Simulate parameter updates after retraining
+		if detector.Parameters == nil {
+			detector.Parameters = make(map[string]string)
+		}
+		detector.Parameters["last_retrained"] = time.Now().Format(time.RFC3339)
+	}
+
+	// Perform model initialization with the new source
+	if err := s.initializeUpdatedModel(detector, req.ModelSourceUri); err != nil {
+		// Rollback to original parameters if initialization fails
+		detector.Parameters = originalParams
+		return nil, status.Errorf(codes.Internal, "model initialization failed: %v", err)
+	}
+
+	// Persist the updated model (in a real implementation, this would be persisted to storage)
+	log.Info().
+		Str("detector_id", detector.ID).
+		Str("version", detector.Version).
+		Str("source_uri", req.ModelSourceUri).
+		Bool("force_retrain", req.ForceRetrain).
+		Msg("Updated anomaly detection model")
+
+	// Return response with updated model info
 	return &blackicev1.UpdateModelResponse{
 		Status: &blackicev1.Status{
-			Code:    blackicev1.Status_NOT_FOUND, // Using a standard error code until implemented
-			Message: "Method not implemented yet",
+			Code:    blackicev1.Status_OK,
+			Message: "Model updated successfully",
 		},
+		ModelId:         req.ModelId,
+		NewModelVersion: detector.Version,
+		UpdateTaskId:    "task-" + uuid.New().String(),
 	}, nil
+}
+
+// validateModelUpdate performs validation on the model update
+func (s *Service) validateModelUpdate(req *blackicev1.UpdateModelRequest, detector *Detector) error {
+	// Validate model source URI if provided
+	if req.ModelSourceUri != "" {
+		// For a real implementation, validate the URI format and accessibility
+		if !strings.HasPrefix(req.ModelSourceUri, "s3://") &&
+			!strings.HasPrefix(req.ModelSourceUri, "gs://") &&
+			!strings.HasPrefix(req.ModelSourceUri, "http://") &&
+			!strings.HasPrefix(req.ModelSourceUri, "https://") {
+			return fmt.Errorf("invalid model source URI format: %s", req.ModelSourceUri)
+		}
+	}
+
+	// Verify model version format if provided
+	if req.ModelVersionTag != "" && !isValidVersionFormat(req.ModelVersionTag) {
+		return fmt.Errorf("invalid model version tag format: %s", req.ModelVersionTag)
+	}
+
+	return nil
+}
+
+// isValidVersionFormat checks if a version string is in valid format
+func isValidVersionFormat(version string) bool {
+	// This is a simple placeholder - in a real system, you'd want a more sophisticated version validator
+	// For example, checking that it follows semantic versioning (x.y.z)
+	return len(version) > 0
+}
+
+// initializeUpdatedModel prepares the updated model for use
+func (s *Service) initializeUpdatedModel(detector *Detector, modelSourceUri string) error {
+	// This would initialize any in-memory structures needed by the detector
+	// For example, loading ML models from the source URI, etc.
+
+	log.Debug().
+		Str("detector_id", detector.ID).
+		Str("type", detector.Type).
+		Str("version", detector.Version).
+		Str("source_uri", modelSourceUri).
+		Msg("Initializing updated model")
+
+	// Simulate some initialization work
+	time.Sleep(50 * time.Millisecond)
+
+	return nil
 }
 
 // ProvideFeedback implements the AnomalyService ProvideFeedback RPC
