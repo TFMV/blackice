@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/TFMV/blackice/pkg/flightgw/anomaly"
 	"github.com/TFMV/blackice/pkg/flightgw/server"
 	"github.com/TFMV/blackice/pkg/flightgw/trust"
 	"github.com/rs/zerolog/log"
@@ -14,10 +15,11 @@ import (
 // SystemObserver provides a central observability layer for the BlackIce system
 // It automatically collects and exposes metrics from all critical components
 type SystemObserver struct {
-	mu              sync.RWMutex
-	telemetry       *TelemetryManager
-	circuitObserver *server.CircuitBreakerObserver
-	trustObserver   *trust.TrustSystemObserver
+	mu                 sync.RWMutex
+	telemetry          *TelemetryManager
+	circuitObserver    *server.CircuitBreakerObserver
+	trustObserver      *trust.TrustSystemObserver
+	anomalyIntegration *AnomalyIntegration
 
 	// Trust metrics
 	sourceTrustScores      map[string]int
@@ -80,6 +82,14 @@ func (o *SystemObserver) Start() error {
 // Stop gracefully shuts down the observer
 func (o *SystemObserver) Stop() error {
 	o.cancel()
+
+	// Stop anomaly integration if it exists
+	if o.anomalyIntegration != nil {
+		if err := o.anomalyIntegration.Stop(); err != nil {
+			log.Error().Err(err).Msg("Error stopping anomaly integration")
+		}
+	}
+
 	return o.telemetry.Stop(context.Background())
 }
 
@@ -127,4 +137,44 @@ func (o *SystemObserver) IntegrateTrustSystem(ts interface{}) {
 	} else {
 		log.Error().Msg("Trust system does not implement GetHooks correctly")
 	}
+}
+
+// IntegrateAnomalyDetection connects the anomaly detection service to the telemetry system
+func (o *SystemObserver) IntegrateAnomalyDetection(config *AnomalyIntegrationConfig) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	// Create anomaly integration
+	integration, err := NewAnomalyIntegration(o.telemetry, config)
+	if err != nil {
+		return err
+	}
+
+	o.anomalyIntegration = integration
+	log.Info().Msg("Anomaly detection integrated with telemetry system")
+	return nil
+}
+
+// ForwardToAnomalyDetection forwards a telemetry event to the anomaly detection service
+func (o *SystemObserver) ForwardToAnomalyDetection(componentID, eventType string, attributes map[string]interface{}, rawData []byte) error {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+
+	if o.anomalyIntegration == nil || !o.anomalyIntegration.enabled {
+		return nil
+	}
+
+	return o.anomalyIntegration.ForwardTelemetryEvent(componentID, eventType, attributes, rawData)
+}
+
+// GetAnomalyClient returns the anomaly client for direct interaction with the anomaly detection service
+func (o *SystemObserver) GetAnomalyClient() *anomaly.Client {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+
+	if o.anomalyIntegration == nil {
+		return nil
+	}
+
+	return o.anomalyIntegration.anomalyClient
 }

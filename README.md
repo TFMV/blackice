@@ -207,6 +207,56 @@ The gateway implements a military-grade dynamic trust scoring system that automa
 - `/admin/trust/thresholds`: Configure adaptive threshold settings
 - `/admin/trust/tiers`: View and manage trust tier requirements
 
+## Comprehensive Anomaly Detection System
+
+The gateway implements a sophisticated anomaly detection system that monitors system behavior in real-time and identifies potential security threats:
+
+### Advanced Detection Mechanisms
+
+- Multiple specialized detectors working in parallel:
+  - Statistical Threshold Detector for metric-based anomalies
+  - Volume Anomaly Detector for unusual event frequencies
+  - Behavioral Pattern Detector for suspicious activity sequences
+- Adaptive sensitivity with configurable thresholds and baselines
+- Machine learning-ready architecture for future enhancements
+
+### MITRE ATT&CK Framework Integration
+
+- Automatic mapping of anomalies to MITRE ATT&CK techniques
+- TTP (Tactics, Techniques, Procedures) identification
+- Standardized threat classification for security operations
+- Threat intelligence compatibility with external systems
+
+### Complete Anomaly Lifecycle Management
+
+- End-to-end tracking from detection through resolution
+- Remediation status tracking (Pending, In Progress, Resolved, etc.)
+- Analyst feedback loop to improve detection accuracy
+- False positive management and tuning capabilities
+
+### Rich Contextual Information
+
+- Comprehensive anomaly context for investigation:
+  - Affected resources identification
+  - Related events correlation
+  - Categorized anomaly classification
+  - Confidence scoring for prioritization
+- Time-series tracking with update and analysis timestamps
+
+### Integration with BlackIce Ecosystem
+
+- Seamless telemetry system integration for data collection
+- Trust score adjustment based on detected anomalies
+- Panic system escalation for critical security events
+- Cross-component correlation for system-wide threat analysis
+
+### Anomaly Management API Endpoints
+
+- `/admin/anomaly/detectors`: Manage and configure anomaly detectors
+- `/admin/anomaly/anomalies`: Query and investigate detected anomalies
+- `/admin/anomaly/feedback`: Provide analyst feedback on detections
+- `/admin/anomaly/status`: View detector operational status and health
+
 ## Advanced Telemetry Framework
 
 The gateway includes a high-assurance telemetry system that provides comprehensive visibility while maintaining security:
@@ -268,6 +318,7 @@ The gateway is implemented as a Go package with modular components:
 - `pkg/flightgw/server`: Flight server implementation
 - `pkg/flightgw/crypto`: Cryptographic components (HMAC, attestation, Merkle)
 - `pkg/flightgw/trust`: Trust scoring system and source registry
+- `pkg/flightgw/anomaly`: Anomaly detection and management system
 - `pkg/flightgw/config`: Configuration management
 - `pkg/flightgw/proxy`: Proxy implementation
 - `pkg/flightgw/telemetry`: Integrated observability framework
