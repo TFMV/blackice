@@ -45,6 +45,27 @@ message Anomaly {
   string detector_id = 5;         // Identifier of the detector that found this anomaly
   map<string, string> metadata = 6; // e.g., specific metrics that triggered it
   Severity severity = 7;          // Severity of the anomaly
+  
+  string source_component_id = 8; // Component that generated the anomaly
+  string category = 9; // Category of anomaly (e.g., "volume", "behavioral", "consistency")
+  repeated string related_event_ids = 10; // IDs of telemetry events related to this anomaly
+  repeated string affected_resources = 11; // Resources impacted by this anomaly
+  RemediationStatus remediation_status = 12; // Current status of remediation
+  repeated string ttp_identifiers = 13; // Tactics, Techniques, Procedures identifiers
+  string mitre_technique = 14; // MITRE ATT&CK framework technique ID
+  int64 last_updated_unix_ns = 15; // Last update timestamp
+  string analyst_id = 16; // ID of analyst who reviewed the anomaly
+  int64 analyzed_at_unix_ns = 17; // When the anomaly was analyzed by a human
+
+  enum RemediationStatus {
+    NONE = 0;
+    PENDING = 1;
+    IN_PROGRESS = 2;
+    RESOLVED = 3;
+    FALSE_POSITIVE = 4;
+    ESCALATED = 5;
+  }
+  
   enum Severity {
     UNKNOWN = 0;
     INFO = 1;

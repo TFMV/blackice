@@ -180,6 +180,64 @@ func (Status_Code) EnumDescriptor() ([]byte, []int) {
 	return file_blackice_proto_blackice_v1_common_proto_rawDescGZIP(), []int{0, 0}
 }
 
+type Anomaly_RemediationStatus int32
+
+const (
+	Anomaly_NONE           Anomaly_RemediationStatus = 0
+	Anomaly_PENDING        Anomaly_RemediationStatus = 1
+	Anomaly_IN_PROGRESS    Anomaly_RemediationStatus = 2
+	Anomaly_RESOLVED       Anomaly_RemediationStatus = 3
+	Anomaly_FALSE_POSITIVE Anomaly_RemediationStatus = 4
+	Anomaly_ESCALATED      Anomaly_RemediationStatus = 5
+)
+
+// Enum value maps for Anomaly_RemediationStatus.
+var (
+	Anomaly_RemediationStatus_name = map[int32]string{
+		0: "NONE",
+		1: "PENDING",
+		2: "IN_PROGRESS",
+		3: "RESOLVED",
+		4: "FALSE_POSITIVE",
+		5: "ESCALATED",
+	}
+	Anomaly_RemediationStatus_value = map[string]int32{
+		"NONE":           0,
+		"PENDING":        1,
+		"IN_PROGRESS":    2,
+		"RESOLVED":       3,
+		"FALSE_POSITIVE": 4,
+		"ESCALATED":      5,
+	}
+)
+
+func (x Anomaly_RemediationStatus) Enum() *Anomaly_RemediationStatus {
+	p := new(Anomaly_RemediationStatus)
+	*p = x
+	return p
+}
+
+func (x Anomaly_RemediationStatus) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (Anomaly_RemediationStatus) Descriptor() protoreflect.EnumDescriptor {
+	return file_blackice_proto_blackice_v1_common_proto_enumTypes[2].Descriptor()
+}
+
+func (Anomaly_RemediationStatus) Type() protoreflect.EnumType {
+	return &file_blackice_proto_blackice_v1_common_proto_enumTypes[2]
+}
+
+func (x Anomaly_RemediationStatus) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use Anomaly_RemediationStatus.Descriptor instead.
+func (Anomaly_RemediationStatus) EnumDescriptor() ([]byte, []int) {
+	return file_blackice_proto_blackice_v1_common_proto_rawDescGZIP(), []int{2, 0}
+}
+
 type Anomaly_Severity int32
 
 const (
@@ -222,11 +280,11 @@ func (x Anomaly_Severity) String() string {
 }
 
 func (Anomaly_Severity) Descriptor() protoreflect.EnumDescriptor {
-	return file_blackice_proto_blackice_v1_common_proto_enumTypes[2].Descriptor()
+	return file_blackice_proto_blackice_v1_common_proto_enumTypes[3].Descriptor()
 }
 
 func (Anomaly_Severity) Type() protoreflect.EnumType {
-	return &file_blackice_proto_blackice_v1_common_proto_enumTypes[2]
+	return &file_blackice_proto_blackice_v1_common_proto_enumTypes[3]
 }
 
 func (x Anomaly_Severity) Number() protoreflect.EnumNumber {
@@ -235,7 +293,7 @@ func (x Anomaly_Severity) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use Anomaly_Severity.Descriptor instead.
 func (Anomaly_Severity) EnumDescriptor() ([]byte, []int) {
-	return file_blackice_proto_blackice_v1_common_proto_rawDescGZIP(), []int{2, 0}
+	return file_blackice_proto_blackice_v1_common_proto_rawDescGZIP(), []int{2, 1}
 }
 
 type NodeHealth_State int32
@@ -286,11 +344,11 @@ func (x NodeHealth_State) String() string {
 }
 
 func (NodeHealth_State) Descriptor() protoreflect.EnumDescriptor {
-	return file_blackice_proto_blackice_v1_common_proto_enumTypes[3].Descriptor()
+	return file_blackice_proto_blackice_v1_common_proto_enumTypes[4].Descriptor()
 }
 
 func (NodeHealth_State) Type() protoreflect.EnumType {
-	return &file_blackice_proto_blackice_v1_common_proto_enumTypes[3]
+	return &file_blackice_proto_blackice_v1_common_proto_enumTypes[4]
 }
 
 func (x NodeHealth_State) Number() protoreflect.EnumNumber {
@@ -332,11 +390,11 @@ func (x MerkleNode_Position) String() string {
 }
 
 func (MerkleNode_Position) Descriptor() protoreflect.EnumDescriptor {
-	return file_blackice_proto_blackice_v1_common_proto_enumTypes[4].Descriptor()
+	return file_blackice_proto_blackice_v1_common_proto_enumTypes[5].Descriptor()
 }
 
 func (MerkleNode_Position) Type() protoreflect.EnumType {
-	return &file_blackice_proto_blackice_v1_common_proto_enumTypes[4]
+	return &file_blackice_proto_blackice_v1_common_proto_enumTypes[5]
 }
 
 func (x MerkleNode_Position) Number() protoreflect.EnumNumber {
@@ -375,11 +433,11 @@ func (x CRDTConfig_CRDTType) String() string {
 }
 
 func (CRDTConfig_CRDTType) Descriptor() protoreflect.EnumDescriptor {
-	return file_blackice_proto_blackice_v1_common_proto_enumTypes[5].Descriptor()
+	return file_blackice_proto_blackice_v1_common_proto_enumTypes[6].Descriptor()
 }
 
 func (CRDTConfig_CRDTType) Type() protoreflect.EnumType {
-	return &file_blackice_proto_blackice_v1_common_proto_enumTypes[5]
+	return &file_blackice_proto_blackice_v1_common_proto_enumTypes[6]
 }
 
 func (x CRDTConfig_CRDTType) Number() protoreflect.EnumNumber {
@@ -539,16 +597,26 @@ func (x *TrustScore) GetEvaluatorVersion() string {
 
 // Anomaly detection result
 type Anomaly struct {
-	state            protoimpl.MessageState `protogen:"open.v1"`
-	Id               string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"` // Unique anomaly ID
-	Description      string                 `protobuf:"bytes,2,opt,name=description,proto3" json:"description,omitempty"`
-	Confidence       float32                `protobuf:"fixed32,3,opt,name=confidence,proto3" json:"confidence,omitempty"`                                                                     // 0-1 confidence score
-	DetectedAtUnixNs int64                  `protobuf:"varint,4,opt,name=detected_at_unix_ns,json=detectedAtUnixNs,proto3" json:"detected_at_unix_ns,omitempty"`                              // Detection timestamp (Unix time in nanoseconds)
-	DetectorId       string                 `protobuf:"bytes,5,opt,name=detector_id,json=detectorId,proto3" json:"detector_id,omitempty"`                                                     // Identifier of the detector that found this anomaly
-	Metadata         map[string]string      `protobuf:"bytes,6,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"` // e.g., specific metrics that triggered it
-	Severity         Anomaly_Severity       `protobuf:"varint,7,opt,name=severity,proto3,enum=blackice.v1.Anomaly_Severity" json:"severity,omitempty"`                                        // Severity of the anomaly
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	state             protoimpl.MessageState    `protogen:"open.v1"`
+	Id                string                    `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"` // Unique anomaly ID
+	Description       string                    `protobuf:"bytes,2,opt,name=description,proto3" json:"description,omitempty"`
+	Confidence        float32                   `protobuf:"fixed32,3,opt,name=confidence,proto3" json:"confidence,omitempty"`                                                                                   // 0-1 confidence score
+	DetectedAtUnixNs  int64                     `protobuf:"varint,4,opt,name=detected_at_unix_ns,json=detectedAtUnixNs,proto3" json:"detected_at_unix_ns,omitempty"`                                            // Detection timestamp (Unix time in nanoseconds)
+	DetectorId        string                    `protobuf:"bytes,5,opt,name=detector_id,json=detectorId,proto3" json:"detector_id,omitempty"`                                                                   // Identifier of the detector that found this anomaly
+	Metadata          map[string]string         `protobuf:"bytes,6,rep,name=metadata,proto3" json:"metadata,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`               // e.g., specific metrics that triggered it
+	Severity          Anomaly_Severity          `protobuf:"varint,7,opt,name=severity,proto3,enum=blackice.v1.Anomaly_Severity" json:"severity,omitempty"`                                                      // Severity of the anomaly
+	SourceComponentId string                    `protobuf:"bytes,8,opt,name=source_component_id,json=sourceComponentId,proto3" json:"source_component_id,omitempty"`                                            // Component that generated the anomaly
+	Category          string                    `protobuf:"bytes,9,opt,name=category,proto3" json:"category,omitempty"`                                                                                         // Category of anomaly (e.g., "volume", "behavioral", "consistency")
+	RelatedEventIds   []string                  `protobuf:"bytes,10,rep,name=related_event_ids,json=relatedEventIds,proto3" json:"related_event_ids,omitempty"`                                                 // IDs of telemetry events related to this anomaly
+	AffectedResources []string                  `protobuf:"bytes,11,rep,name=affected_resources,json=affectedResources,proto3" json:"affected_resources,omitempty"`                                             // Resources impacted by this anomaly
+	RemediationStatus Anomaly_RemediationStatus `protobuf:"varint,12,opt,name=remediation_status,json=remediationStatus,proto3,enum=blackice.v1.Anomaly_RemediationStatus" json:"remediation_status,omitempty"` // Current status of remediation
+	TtpIdentifiers    []string                  `protobuf:"bytes,13,rep,name=ttp_identifiers,json=ttpIdentifiers,proto3" json:"ttp_identifiers,omitempty"`                                                      // Tactics, Techniques, Procedures identifiers
+	MitreTechnique    string                    `protobuf:"bytes,14,opt,name=mitre_technique,json=mitreTechnique,proto3" json:"mitre_technique,omitempty"`                                                      // MITRE ATT&CK framework technique ID
+	LastUpdatedUnixNs int64                     `protobuf:"varint,15,opt,name=last_updated_unix_ns,json=lastUpdatedUnixNs,proto3" json:"last_updated_unix_ns,omitempty"`                                        // Last update timestamp
+	AnalystId         string                    `protobuf:"bytes,16,opt,name=analyst_id,json=analystId,proto3" json:"analyst_id,omitempty"`                                                                     // ID of analyst who reviewed the anomaly
+	AnalyzedAtUnixNs  int64                     `protobuf:"varint,17,opt,name=analyzed_at_unix_ns,json=analyzedAtUnixNs,proto3" json:"analyzed_at_unix_ns,omitempty"`                                           // When the anomaly was analyzed by a human
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *Anomaly) Reset() {
@@ -628,6 +696,76 @@ func (x *Anomaly) GetSeverity() Anomaly_Severity {
 		return x.Severity
 	}
 	return Anomaly_UNKNOWN
+}
+
+func (x *Anomaly) GetSourceComponentId() string {
+	if x != nil {
+		return x.SourceComponentId
+	}
+	return ""
+}
+
+func (x *Anomaly) GetCategory() string {
+	if x != nil {
+		return x.Category
+	}
+	return ""
+}
+
+func (x *Anomaly) GetRelatedEventIds() []string {
+	if x != nil {
+		return x.RelatedEventIds
+	}
+	return nil
+}
+
+func (x *Anomaly) GetAffectedResources() []string {
+	if x != nil {
+		return x.AffectedResources
+	}
+	return nil
+}
+
+func (x *Anomaly) GetRemediationStatus() Anomaly_RemediationStatus {
+	if x != nil {
+		return x.RemediationStatus
+	}
+	return Anomaly_NONE
+}
+
+func (x *Anomaly) GetTtpIdentifiers() []string {
+	if x != nil {
+		return x.TtpIdentifiers
+	}
+	return nil
+}
+
+func (x *Anomaly) GetMitreTechnique() string {
+	if x != nil {
+		return x.MitreTechnique
+	}
+	return ""
+}
+
+func (x *Anomaly) GetLastUpdatedUnixNs() int64 {
+	if x != nil {
+		return x.LastUpdatedUnixNs
+	}
+	return 0
+}
+
+func (x *Anomaly) GetAnalystId() string {
+	if x != nil {
+		return x.AnalystId
+	}
+	return ""
+}
+
+func (x *Anomaly) GetAnalyzedAtUnixNs() int64 {
+	if x != nil {
+		return x.AnalyzedAtUnixNs
+	}
+	return 0
 }
 
 // Node health status, as defined in requirements section 7.1
@@ -1476,7 +1614,7 @@ const file_blackice_proto_blackice_v1_common_proto_rawDesc = "" +
 	"\revaluation_id\x18\x03 \x01(\tR\fevaluationId\x12*\n" +
 	"\x11timestamp_unix_ns\x18\x04 \x01(\x03R\x0ftimestampUnixNs\x122\n" +
 	"\tanomalies\x18\x05 \x03(\v2\x14.blackice.v1.AnomalyR\tanomalies\x12+\n" +
-	"\x11evaluator_version\x18\x06 \x01(\tR\x10evaluatorVersion\"\xb3\x03\n" +
+	"\x11evaluator_version\x18\x06 \x01(\tR\x10evaluatorVersion\"\xf0\a\n" +
 	"\aAnomaly\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12 \n" +
 	"\vdescription\x18\x02 \x01(\tR\vdescription\x12\x1e\n" +
@@ -1487,10 +1625,29 @@ const file_blackice_proto_blackice_v1_common_proto_rawDesc = "" +
 	"\vdetector_id\x18\x05 \x01(\tR\n" +
 	"detectorId\x12>\n" +
 	"\bmetadata\x18\x06 \x03(\v2\".blackice.v1.Anomaly.MetadataEntryR\bmetadata\x129\n" +
-	"\bseverity\x18\a \x01(\x0e2\x1d.blackice.v1.Anomaly.SeverityR\bseverity\x1a;\n" +
+	"\bseverity\x18\a \x01(\x0e2\x1d.blackice.v1.Anomaly.SeverityR\bseverity\x12.\n" +
+	"\x13source_component_id\x18\b \x01(\tR\x11sourceComponentId\x12\x1a\n" +
+	"\bcategory\x18\t \x01(\tR\bcategory\x12*\n" +
+	"\x11related_event_ids\x18\n" +
+	" \x03(\tR\x0frelatedEventIds\x12-\n" +
+	"\x12affected_resources\x18\v \x03(\tR\x11affectedResources\x12U\n" +
+	"\x12remediation_status\x18\f \x01(\x0e2&.blackice.v1.Anomaly.RemediationStatusR\x11remediationStatus\x12'\n" +
+	"\x0fttp_identifiers\x18\r \x03(\tR\x0ettpIdentifiers\x12'\n" +
+	"\x0fmitre_technique\x18\x0e \x01(\tR\x0emitreTechnique\x12/\n" +
+	"\x14last_updated_unix_ns\x18\x0f \x01(\x03R\x11lastUpdatedUnixNs\x12\x1d\n" +
+	"\n" +
+	"analyst_id\x18\x10 \x01(\tR\tanalystId\x12-\n" +
+	"\x13analyzed_at_unix_ns\x18\x11 \x01(\x03R\x10analyzedAtUnixNs\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"N\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"l\n" +
+	"\x11RemediationStatus\x12\b\n" +
+	"\x04NONE\x10\x00\x12\v\n" +
+	"\aPENDING\x10\x01\x12\x0f\n" +
+	"\vIN_PROGRESS\x10\x02\x12\f\n" +
+	"\bRESOLVED\x10\x03\x12\x12\n" +
+	"\x0eFALSE_POSITIVE\x10\x04\x12\r\n" +
+	"\tESCALATED\x10\x05\"N\n" +
 	"\bSeverity\x12\v\n" +
 	"\aUNKNOWN\x10\x00\x12\b\n" +
 	"\x04INFO\x10\x01\x12\a\n" +
@@ -1634,61 +1791,63 @@ func file_blackice_proto_blackice_v1_common_proto_rawDescGZIP() []byte {
 	return file_blackice_proto_blackice_v1_common_proto_rawDescData
 }
 
-var file_blackice_proto_blackice_v1_common_proto_enumTypes = make([]protoimpl.EnumInfo, 6)
+var file_blackice_proto_blackice_v1_common_proto_enumTypes = make([]protoimpl.EnumInfo, 7)
 var file_blackice_proto_blackice_v1_common_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
 var file_blackice_proto_blackice_v1_common_proto_goTypes = []any{
-	(EntryType)(0),           // 0: blackice.v1.EntryType
-	(Status_Code)(0),         // 1: blackice.v1.Status.Code
-	(Anomaly_Severity)(0),    // 2: blackice.v1.Anomaly.Severity
-	(NodeHealth_State)(0),    // 3: blackice.v1.NodeHealth.State
-	(MerkleNode_Position)(0), // 4: blackice.v1.MerkleNode.Position
-	(CRDTConfig_CRDTType)(0), // 5: blackice.v1.CRDTConfig.CRDTType
-	(*Status)(nil),           // 6: blackice.v1.Status
-	(*TrustScore)(nil),       // 7: blackice.v1.TrustScore
-	(*Anomaly)(nil),          // 8: blackice.v1.Anomaly
-	(*NodeHealth)(nil),       // 9: blackice.v1.NodeHealth
-	(*Attestation)(nil),      // 10: blackice.v1.Attestation
-	(*CertificateInfo)(nil),  // 11: blackice.v1.CertificateInfo
-	(*BatchMetadata)(nil),    // 12: blackice.v1.BatchMetadata
-	(*MerkleProof)(nil),      // 13: blackice.v1.MerkleProof
-	(*MerkleNode)(nil),       // 14: blackice.v1.MerkleNode
-	(*QuorumDecision)(nil),   // 15: blackice.v1.QuorumDecision
-	(*CRDTConfig)(nil),       // 16: blackice.v1.CRDTConfig
-	(*LedgerEntry)(nil),      // 17: blackice.v1.LedgerEntry
-	nil,                      // 18: blackice.v1.Status.DetailsEntry
-	nil,                      // 19: blackice.v1.Anomaly.MetadataEntry
-	nil,                      // 20: blackice.v1.NodeHealth.MetricsEntry
-	nil,                      // 21: blackice.v1.BatchMetadata.CustomMetadataEntry
-	nil,                      // 22: blackice.v1.CRDTConfig.ParametersEntry
+	(EntryType)(0),                 // 0: blackice.v1.EntryType
+	(Status_Code)(0),               // 1: blackice.v1.Status.Code
+	(Anomaly_RemediationStatus)(0), // 2: blackice.v1.Anomaly.RemediationStatus
+	(Anomaly_Severity)(0),          // 3: blackice.v1.Anomaly.Severity
+	(NodeHealth_State)(0),          // 4: blackice.v1.NodeHealth.State
+	(MerkleNode_Position)(0),       // 5: blackice.v1.MerkleNode.Position
+	(CRDTConfig_CRDTType)(0),       // 6: blackice.v1.CRDTConfig.CRDTType
+	(*Status)(nil),                 // 7: blackice.v1.Status
+	(*TrustScore)(nil),             // 8: blackice.v1.TrustScore
+	(*Anomaly)(nil),                // 9: blackice.v1.Anomaly
+	(*NodeHealth)(nil),             // 10: blackice.v1.NodeHealth
+	(*Attestation)(nil),            // 11: blackice.v1.Attestation
+	(*CertificateInfo)(nil),        // 12: blackice.v1.CertificateInfo
+	(*BatchMetadata)(nil),          // 13: blackice.v1.BatchMetadata
+	(*MerkleProof)(nil),            // 14: blackice.v1.MerkleProof
+	(*MerkleNode)(nil),             // 15: blackice.v1.MerkleNode
+	(*QuorumDecision)(nil),         // 16: blackice.v1.QuorumDecision
+	(*CRDTConfig)(nil),             // 17: blackice.v1.CRDTConfig
+	(*LedgerEntry)(nil),            // 18: blackice.v1.LedgerEntry
+	nil,                            // 19: blackice.v1.Status.DetailsEntry
+	nil,                            // 20: blackice.v1.Anomaly.MetadataEntry
+	nil,                            // 21: blackice.v1.NodeHealth.MetricsEntry
+	nil,                            // 22: blackice.v1.BatchMetadata.CustomMetadataEntry
+	nil,                            // 23: blackice.v1.CRDTConfig.ParametersEntry
 }
 var file_blackice_proto_blackice_v1_common_proto_depIdxs = []int32{
 	1,  // 0: blackice.v1.Status.code:type_name -> blackice.v1.Status.Code
-	18, // 1: blackice.v1.Status.details:type_name -> blackice.v1.Status.DetailsEntry
-	8,  // 2: blackice.v1.TrustScore.anomalies:type_name -> blackice.v1.Anomaly
-	19, // 3: blackice.v1.Anomaly.metadata:type_name -> blackice.v1.Anomaly.MetadataEntry
-	2,  // 4: blackice.v1.Anomaly.severity:type_name -> blackice.v1.Anomaly.Severity
-	3,  // 5: blackice.v1.NodeHealth.state:type_name -> blackice.v1.NodeHealth.State
-	7,  // 6: blackice.v1.NodeHealth.trust_score:type_name -> blackice.v1.TrustScore
-	20, // 7: blackice.v1.NodeHealth.metrics:type_name -> blackice.v1.NodeHealth.MetricsEntry
-	11, // 8: blackice.v1.Attestation.certificate_chain:type_name -> blackice.v1.CertificateInfo
-	21, // 9: blackice.v1.BatchMetadata.custom_metadata:type_name -> blackice.v1.BatchMetadata.CustomMetadataEntry
-	10, // 10: blackice.v1.BatchMetadata.source_attestation:type_name -> blackice.v1.Attestation
-	10, // 11: blackice.v1.BatchMetadata.path_attestations:type_name -> blackice.v1.Attestation
-	10, // 12: blackice.v1.BatchMetadata.arrival_attestation:type_name -> blackice.v1.Attestation
-	7,  // 13: blackice.v1.BatchMetadata.initial_trust_score:type_name -> blackice.v1.TrustScore
-	14, // 14: blackice.v1.MerkleProof.path:type_name -> blackice.v1.MerkleNode
-	4,  // 15: blackice.v1.MerkleNode.position:type_name -> blackice.v1.MerkleNode.Position
-	10, // 16: blackice.v1.QuorumDecision.member_attestations:type_name -> blackice.v1.Attestation
-	5,  // 17: blackice.v1.CRDTConfig.type:type_name -> blackice.v1.CRDTConfig.CRDTType
-	22, // 18: blackice.v1.CRDTConfig.parameters:type_name -> blackice.v1.CRDTConfig.ParametersEntry
-	0,  // 19: blackice.v1.LedgerEntry.entry_type:type_name -> blackice.v1.EntryType
-	10, // 20: blackice.v1.LedgerEntry.entry_attestation:type_name -> blackice.v1.Attestation
-	13, // 21: blackice.v1.LedgerEntry.merkle_proof:type_name -> blackice.v1.MerkleProof
-	22, // [22:22] is the sub-list for method output_type
-	22, // [22:22] is the sub-list for method input_type
-	22, // [22:22] is the sub-list for extension type_name
-	22, // [22:22] is the sub-list for extension extendee
-	0,  // [0:22] is the sub-list for field type_name
+	19, // 1: blackice.v1.Status.details:type_name -> blackice.v1.Status.DetailsEntry
+	9,  // 2: blackice.v1.TrustScore.anomalies:type_name -> blackice.v1.Anomaly
+	20, // 3: blackice.v1.Anomaly.metadata:type_name -> blackice.v1.Anomaly.MetadataEntry
+	3,  // 4: blackice.v1.Anomaly.severity:type_name -> blackice.v1.Anomaly.Severity
+	2,  // 5: blackice.v1.Anomaly.remediation_status:type_name -> blackice.v1.Anomaly.RemediationStatus
+	4,  // 6: blackice.v1.NodeHealth.state:type_name -> blackice.v1.NodeHealth.State
+	8,  // 7: blackice.v1.NodeHealth.trust_score:type_name -> blackice.v1.TrustScore
+	21, // 8: blackice.v1.NodeHealth.metrics:type_name -> blackice.v1.NodeHealth.MetricsEntry
+	12, // 9: blackice.v1.Attestation.certificate_chain:type_name -> blackice.v1.CertificateInfo
+	22, // 10: blackice.v1.BatchMetadata.custom_metadata:type_name -> blackice.v1.BatchMetadata.CustomMetadataEntry
+	11, // 11: blackice.v1.BatchMetadata.source_attestation:type_name -> blackice.v1.Attestation
+	11, // 12: blackice.v1.BatchMetadata.path_attestations:type_name -> blackice.v1.Attestation
+	11, // 13: blackice.v1.BatchMetadata.arrival_attestation:type_name -> blackice.v1.Attestation
+	8,  // 14: blackice.v1.BatchMetadata.initial_trust_score:type_name -> blackice.v1.TrustScore
+	15, // 15: blackice.v1.MerkleProof.path:type_name -> blackice.v1.MerkleNode
+	5,  // 16: blackice.v1.MerkleNode.position:type_name -> blackice.v1.MerkleNode.Position
+	11, // 17: blackice.v1.QuorumDecision.member_attestations:type_name -> blackice.v1.Attestation
+	6,  // 18: blackice.v1.CRDTConfig.type:type_name -> blackice.v1.CRDTConfig.CRDTType
+	23, // 19: blackice.v1.CRDTConfig.parameters:type_name -> blackice.v1.CRDTConfig.ParametersEntry
+	0,  // 20: blackice.v1.LedgerEntry.entry_type:type_name -> blackice.v1.EntryType
+	11, // 21: blackice.v1.LedgerEntry.entry_attestation:type_name -> blackice.v1.Attestation
+	14, // 22: blackice.v1.LedgerEntry.merkle_proof:type_name -> blackice.v1.MerkleProof
+	23, // [23:23] is the sub-list for method output_type
+	23, // [23:23] is the sub-list for method input_type
+	23, // [23:23] is the sub-list for extension type_name
+	23, // [23:23] is the sub-list for extension extendee
+	0,  // [0:23] is the sub-list for field type_name
 }
 
 func init() { file_blackice_proto_blackice_v1_common_proto_init() }
@@ -1701,7 +1860,7 @@ func file_blackice_proto_blackice_v1_common_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_blackice_proto_blackice_v1_common_proto_rawDesc), len(file_blackice_proto_blackice_v1_common_proto_rawDesc)),
-			NumEnums:      6,
+			NumEnums:      7,
 			NumMessages:   17,
 			NumExtensions: 0,
 			NumServices:   0,

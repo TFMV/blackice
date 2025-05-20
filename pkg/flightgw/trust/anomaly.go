@@ -2,6 +2,7 @@ package trust
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -103,6 +104,43 @@ func (ad *AnomalyDetector) ReportAnomaly(
 		anomaly.ConfidenceScore = confidence
 	}
 
+	// Process MITRE ATT&CK and TTP information if available
+	var mitreTechnique string
+	var ttpIdentifiers []string
+
+	if mitreData, ok := details["mitre_technique"].(string); ok && mitreData != "" {
+		mitreTechnique = mitreData
+		// Store in RawData as a map if it's not already a map
+		if anomaly.RawData == nil {
+			anomaly.RawData = make(map[string]interface{})
+		}
+		if rawMap, ok := anomaly.RawData.(map[string]interface{}); ok {
+			rawMap["mitre_technique"] = mitreTechnique
+		}
+	}
+
+	if ttpData, ok := details["ttp_identifiers"].([]string); ok && len(ttpData) > 0 {
+		ttpIdentifiers = ttpData
+		// Store in RawData
+		if rawMap, ok := anomaly.RawData.(map[string]interface{}); ok {
+			rawMap["ttp_identifiers"] = strings.Join(ttpIdentifiers, ",")
+		}
+	}
+
+	// Process affected resources if available
+	if resources, ok := details["affected_resources"].([]string); ok && len(resources) > 0 {
+		if rawMap, ok := anomaly.RawData.(map[string]interface{}); ok {
+			rawMap["affected_resources"] = strings.Join(resources, ",")
+		}
+	}
+
+	// Check for remediation status
+	if status, ok := details["remediation_status"].(int); ok {
+		if rawMap, ok := anomaly.RawData.(map[string]interface{}); ok {
+			rawMap["remediation_status"] = fmt.Sprintf("%d", status)
+		}
+	}
+
 	// Add to recent anomalies
 	ad.recentAnomalies = append(ad.recentAnomalies, anomaly)
 
@@ -154,6 +192,7 @@ func (ad *AnomalyDetector) ReportAnomaly(
 		Str("severity", severityToString(severity)).
 		Int("adjustment", anomaly.AdjustmentValue).
 		Float64("confidence", anomaly.ConfidenceScore).
+		Str("mitre_technique", mitreTechnique).
 		Msg("Anomaly reported and processed")
 
 	return nil
