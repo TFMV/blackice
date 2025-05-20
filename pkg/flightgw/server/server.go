@@ -123,15 +123,23 @@ func NewSecureFlightServer(cfg *config.Config) (*SecureFlightServer, error) {
 // setupUpstreamClient sets up the Flight client to the upstream service
 func (s *SecureFlightServer) setupUpstreamClient() error {
 	clientCfg := s.cfg.Client
-
-	// Set up client TLS options
 	var opts []grpc.DialOption
+
+	// Validate configuration
+	if clientCfg.UpstreamHost == "" {
+		log.Info().Msg("No upstream host configured, skipping client setup")
+		return nil
+	}
+
+	// Set up TLS if configured
 	if clientCfg.TLSCertPath != "" && clientCfg.TLSKeyPath != "" {
-		tlsConfig, err := createClientTLSConfig(
+		// Use PQ TLS configuration which will incorporate post-quantum algorithms if enabled
+		tlsConfig, err := crypto.CreatePQClientTLSConfig(
 			clientCfg.TLSCertPath,
 			clientCfg.TLSKeyPath,
 			clientCfg.TLSCACertPath,
 			clientCfg.DisableTLSVerify,
+			s.cfg.Security,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to create client TLS config: %w", err)
@@ -152,7 +160,10 @@ func (s *SecureFlightServer) setupUpstreamClient() error {
 		return fmt.Errorf("failed to create upstream Flight client: %w", err)
 	}
 
-	log.Info().Str("upstream", upstreamAddr).Msg("Connected to upstream Flight service")
+	log.Info().
+		Str("upstream", upstreamAddr).
+		Bool("pq_enabled", s.cfg.Security.EnablePQTLS).
+		Msg("Connected to upstream Flight service")
 	return nil
 }
 
@@ -167,11 +178,13 @@ func (s *SecureFlightServer) Start() error {
 
 	// Set up TLS if configured
 	if s.cfg.Server.TLSCertPath != "" && s.cfg.Server.TLSKeyPath != "" {
-		tlsConfig, err := createServerTLSConfig(
+		// Use PQ TLS configuration which will incorporate post-quantum algorithms if enabled
+		tlsConfig, err := crypto.CreatePQServerTLSConfig(
 			s.cfg.Server.TLSCertPath,
 			s.cfg.Server.TLSKeyPath,
 			s.cfg.Server.TLSCACertPath,
 			s.cfg.Server.EnableMTLS,
+			s.cfg.Security,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to create TLS config: %w", err)
@@ -201,7 +214,10 @@ func (s *SecureFlightServer) Start() error {
 		return fmt.Errorf("failed to listen on %s: %w", addr, err)
 	}
 
-	log.Info().Str("addr", addr).Msg("Starting Secure Flight Gateway")
+	log.Info().
+		Str("addr", addr).
+		Bool("pq_enabled", s.cfg.Security.EnablePQTLS).
+		Msg("Starting Secure Flight Gateway")
 	go func() {
 		if err := s.grpcServer.Serve(s.listener); err != nil {
 			log.Error().Err(err).Msg("Failed to start Flight server")

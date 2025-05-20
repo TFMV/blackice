@@ -225,9 +225,28 @@ func validatePublicKey(keyData []byte, algorithm string) error {
 		}
 	}
 
-	// For post-quantum algorithms, we currently don't have built-in validation
-	// We'd need to implement specific validation for each algorithm
-	// For now, just assume they're valid if they parse as PEM
+	// For post-quantum algorithms, we validate based on the algorithm name
+	switch algorithm {
+	case "DILITHIUM3":
+		if len(block.Bytes) != 1312 {
+			return fmt.Errorf("invalid Dilithium3 public key size: %d (expected 1312)", len(block.Bytes))
+		}
+		// Basic check only - in a real implementation, we'd do more validation
+
+	case "KYBER768":
+		if len(block.Bytes) != 1184 {
+			return fmt.Errorf("invalid Kyber768 public key size: %d (expected 1184)", len(block.Bytes))
+		}
+		// Basic check only - in a real implementation, we'd do more validation
+
+	case "HYBRID-DILITHIUM-ED25519":
+		// For hybrid keys, we expect a combined format
+		// This is simplified - in a real implementation we would split and validate each part
+		if len(block.Bytes) < 1312+32 { // Dilithium3 + Ed25519 (simplistic check)
+			return fmt.Errorf("invalid hybrid public key size: %d (expected at least %d)",
+				len(block.Bytes), 1312+32)
+		}
+	}
 
 	return nil
 }
