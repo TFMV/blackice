@@ -5,11 +5,14 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/apache/arrow/go/v18/arrow/flight"
+	"github.com/apache/arrow-go/v18/arrow/flight"
 	"github.com/rs/zerolog/log"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/TFMV/blackice/pkg/flightgw/config"
 	"github.com/TFMV/blackice/pkg/flightgw/crypto"
+	"github.com/TFMV/blackice/pkg/flightgw/server"
 	"github.com/TFMV/blackice/pkg/flightgw/trust"
 )
 
@@ -44,6 +47,7 @@ type FlightProxy struct {
 	mode             OperationMode
 	transformers     []DataTransformer
 	securityHandlers []SecurityHandler
+	circuitBreaker   *server.CircuitBreaker
 }
 
 // DataTransformer defines an interface for transforming Flight data
@@ -75,6 +79,7 @@ func NewFlightProxy(
 	cfg *config.Config,
 	secCtx *SecurityContext,
 	upstreamClient flight.Client,
+	circuitBreaker *server.CircuitBreaker,
 ) (*FlightProxy, error) {
 	// Determine the operation mode
 	mode := PassThroughMode
@@ -99,6 +104,7 @@ func NewFlightProxy(
 		mode:             mode,
 		transformers:     []DataTransformer{},
 		securityHandlers: []SecurityHandler{},
+		circuitBreaker:   circuitBreaker,
 	}
 
 	// Register security handlers based on configured mode
@@ -582,4 +588,79 @@ func (t *PassThroughTransformer) TransformFlightData(ctx context.Context, data *
 
 func (t *PassThroughTransformer) TransformDescriptor(ctx context.Context, desc *flight.FlightDescriptor) (*flight.FlightDescriptor, error) {
 	return desc, nil
+}
+
+// ProxyDoGet proxies DoGet requests to the upstream server
+func (p *FlightProxy) ProxyDoGet(
+	ctx context.Context,
+	ticket *flight.Ticket,
+	writer flight.FlightService_DoGetServer,
+) error {
+	// Verify that upstream client is available
+	if p.upstreamClient == nil {
+		return status.Error(codes.Unavailable, "upstream client not configured")
+	}
+
+	// Convert the ticket and add appropriate headers
+	proxyTicket, err := p.convertTicket(ctx, ticket)
+	if err != nil {
+		return status.Errorf(codes.InvalidArgument, "failed to convert ticket: %v", err)
+	}
+
+	// Execute the upstream request with circuit breaker protection
+	var reader flight.FlightService_DoGetClient
+	err = p.circuitBreaker.Execute(func() error {
+		var reqErr error
+		reader, reqErr = p.upstreamClient.DoGet(ctx, proxyTicket)
+		return reqErr
+	})
+
+	if err != nil {
+		log.Error().Err(err).Msg("Failed to execute DoGet on upstream server")
+		return status.Errorf(codes.Internal, "upstream DoGet request failed: %v", err)
+	}
+
+	// Proxy the response stream
+	return p.proxyStream(reader, writer)
+}
+
+// convertTicket prepares a Flight ticket for proxying to upstream
+func (p *FlightProxy) convertTicket(ctx context.Context, ticket *flight.Ticket) (*flight.Ticket, error) {
+	// In a real implementation, this might:
+	// 1. Add security metadata
+	// 2. Verify client permissions
+	// 3. Transform the ticket based on policy
+
+	// For now, we just return the original ticket
+	return ticket, nil
+}
+
+// proxyStream handles copying data between Flight streams
+func (p *FlightProxy) proxyStream(reader flight.FlightService_DoGetClient, writer flight.FlightService_DoGetServer) error {
+	for {
+		data, err := reader.Recv()
+		if err != nil {
+			if err == io.EOF {
+				return nil
+			}
+			log.Error().Err(err).Msg("Error receiving data from upstream")
+			return err
+		}
+
+		// Process data through handlers
+		processedData, err := p.processOutgoing(writer.Context(), data)
+		if err != nil {
+			return err
+		}
+
+		finalData, ok := processedData.(*flight.FlightData)
+		if !ok {
+			return fmt.Errorf("unexpected data type after processing: %T", processedData)
+		}
+
+		if err := writer.Send(finalData); err != nil {
+			log.Error().Err(err).Msg("Error sending data to client")
+			return err
+		}
+	}
 }
