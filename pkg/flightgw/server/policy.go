@@ -86,6 +86,18 @@ func (pm *PolicyManager) GetPoliciesByType(policyType PolicyType) []*Policy {
 	return result
 }
 
+// GetAllPolicies returns all policies
+func (pm *PolicyManager) GetAllPolicies() []*Policy {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+
+	var result []*Policy
+	for _, policy := range pm.policies {
+		result = append(result, policy)
+	}
+	return result
+}
+
 // UpdatePolicy updates or adds a policy
 func (pm *PolicyManager) UpdatePolicy(policy *Policy) error {
 	pm.mu.Lock()
