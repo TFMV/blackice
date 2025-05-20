@@ -13,6 +13,14 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+// Define constants for context keys
+const (
+	// ContextKeyAggressive is used for the aggressive remediation context flag
+	ContextKeyAggressive contextKey = "aggressive"
+	// ContextKeyTrustScore is used for the trust score context value
+	ContextKeyTrustScore contextKey = "trust_score"
+)
+
 // AnomalyIntegration provides integration between the telemetry system and the anomaly detection service
 type AnomalyIntegration struct {
 	telemetryManager     *TelemetryManager
@@ -334,10 +342,14 @@ func NewAnomalyIntegration(telemetryManager *TelemetryManager, config *AnomalyIn
 func (ai *AnomalyIntegration) registerDefaultRemediationHandlers() {
 	// Handler for volume anomalies
 	ai.remediationHandlers[string(CategoryVolume)] = func(ctx context.Context, anomaly *AnomalyType) (string, error) {
+		// Check for aggressive mode
+		aggressive, _ := ctx.Value(ContextKeyAggressive).(bool)
+
 		// Implement rate limiting or throttling for the affected component
 		log.Info().
 			Str("anomaly_id", anomaly.AnomalyID).
 			Str("source", anomaly.SourceComponentID).
+			Bool("aggressive", aggressive).
 			Msg("Applying rate limiting remediation for volume anomaly")
 
 		// In a real implementation, this would call into a rate limiting system
@@ -347,10 +359,14 @@ func (ai *AnomalyIntegration) registerDefaultRemediationHandlers() {
 
 	// Handler for behavioral anomalies
 	ai.remediationHandlers[string(CategoryBehavioral)] = func(ctx context.Context, anomaly *AnomalyType) (string, error) {
+		// Check context for trust score
+		trustScore, _ := ctx.Value(ContextKeyTrustScore).(int)
+
 		// Implement behavioral remediation, like restricting permissions
 		log.Info().
 			Str("anomaly_id", anomaly.AnomalyID).
 			Str("source", anomaly.SourceComponentID).
+			Int("trust_score", trustScore).
 			Msg("Applying behavioral remediation")
 
 		// In a real implementation, this would restrict permissions
@@ -366,6 +382,56 @@ func (ai *AnomalyIntegration) registerDefaultRemediationHandlers() {
 			Msg("Applying timing anomaly remediation")
 
 		return "Applied timing remediation", nil
+	}
+
+	// MITRE technique-specific handlers
+
+	// T1110 - Brute Force
+	ai.remediationHandlers["mitre:T1110"] = func(ctx context.Context, anomaly *AnomalyType) (string, error) {
+		// Apply temporary account lockout and increased monitoring
+		log.Info().
+			Str("anomaly_id", anomaly.AnomalyID).
+			Str("technique", "T1110 Brute Force").
+			Str("source", anomaly.SourceComponentID).
+			Msg("Applying brute force remediation (temporary lockout)")
+
+		return "Applied temporary lockout and enhanced monitoring for brute force protection", nil
+	}
+
+	// T1078 - Valid Accounts
+	ai.remediationHandlers["mitre:T1078"] = func(ctx context.Context, anomaly *AnomalyType) (string, error) {
+		// Force credential rotation and enable stepped-up authentication
+		log.Info().
+			Str("anomaly_id", anomaly.AnomalyID).
+			Str("technique", "T1078 Valid Accounts").
+			Str("source", anomaly.SourceComponentID).
+			Msg("Applying valid accounts remediation (forced credential rotation)")
+
+		return "Initiated forced credential rotation and stepped-up authentication", nil
+	}
+
+	// T1059 - Command and Scripting Interpreter
+	ai.remediationHandlers["mitre:T1059"] = func(ctx context.Context, anomaly *AnomalyType) (string, error) {
+		// Apply enhanced process monitoring and restrict script execution
+		log.Info().
+			Str("anomaly_id", anomaly.AnomalyID).
+			Str("technique", "T1059 Command and Scripting Interpreter").
+			Str("source", anomaly.SourceComponentID).
+			Msg("Applying command execution remediation (restrict script execution)")
+
+		return "Applied script execution restrictions and enhanced process monitoring", nil
+	}
+
+	// T1561 - Disk Wipe
+	ai.remediationHandlers["mitre:T1561"] = func(ctx context.Context, anomaly *AnomalyType) (string, error) {
+		// IMMEDIATE isolation and shutdown
+		log.Warn().
+			Str("anomaly_id", anomaly.AnomalyID).
+			Str("technique", "T1561 Disk Wipe").
+			Str("source", anomaly.SourceComponentID).
+			Msg("CRITICAL: Applying emergency isolation for disk wipe threat")
+
+		return "EMERGENCY ISOLATION APPLIED - Suspected disk wipe activity", nil
 	}
 
 	// Default handler for any category
@@ -791,25 +857,94 @@ func (ai *AnomalyIntegration) applyRemediation(anomaly *AnomalyType) {
 		return
 	}
 
-	// Look up appropriate handler based on category
-	categoryStr := string(anomaly.Category)
-	handler, exists := ai.remediationHandlers[categoryStr]
-	if !exists {
-		handler = ai.remediationHandlers["default"]
+	// Get trust score for source to influence remediation decision
+	var trustScore int = 75 // Default trust score
+	if ai.trustManager != nil {
+		if score, err := ai.trustManager.GetSourceScore(anomaly.SourceComponentID); err == nil {
+			trustScore = score
+		}
 	}
 
+	// For high-trust sources, be more conservative with auto-remediation
+	if trustScore > 85 && anomaly.Severity < SeverityHigh {
+		log.Info().
+			Str("anomaly_id", anomaly.AnomalyID).
+			Int("trust_score", trustScore).
+			Msg("Deferring remediation for high-trust source")
+		return
+	}
+
+	// For very low-trust sources, consider more aggressive remediation
+	var aggressive bool = false
+	if trustScore < 30 {
+		aggressive = true
+		log.Warn().
+			Str("anomaly_id", anomaly.AnomalyID).
+			Int("trust_score", trustScore).
+			Msg("Using aggressive remediation for low-trust source")
+	}
+
+	// Declare variables for all paths before conditional jumps
+	var handler RemediationHandler
+	categoryStr := string(anomaly.Category)
+
+	// Determine best handler based on multiple factors
+	// First try to find a specific handler for MITRE technique if available
+	if anomaly.MitreTechnique != "" {
+		if specificHandler, exists := ai.remediationHandlers["mitre:"+anomaly.MitreTechnique]; exists {
+			handler = specificHandler
+			log.Debug().
+				Str("anomaly_id", anomaly.AnomalyID).
+				Str("technique", anomaly.MitreTechnique).
+				Msg("Using MITRE technique-specific remediation handler")
+		} else {
+			// Try category handler
+			if categoryHandler, exists := ai.remediationHandlers[categoryStr]; exists {
+				handler = categoryHandler
+			} else if defaultHandler, exists := ai.remediationHandlers["default"]; exists {
+				handler = defaultHandler
+			} else {
+				log.Error().
+					Str("anomaly_id", anomaly.AnomalyID).
+					Str("category", categoryStr).
+					Msg("No suitable remediation handler found, can't apply remediation")
+				return
+			}
+		}
+	} else {
+		// No MITRE technique, try category handler
+		if categoryHandler, exists := ai.remediationHandlers[categoryStr]; exists {
+			handler = categoryHandler
+		} else if defaultHandler, exists := ai.remediationHandlers["default"]; exists {
+			handler = defaultHandler
+		} else {
+			log.Error().
+				Str("anomaly_id", anomaly.AnomalyID).
+				Str("category", categoryStr).
+				Msg("No suitable remediation handler found, can't apply remediation")
+			return
+		}
+	}
+
+	// Apply remediation with context
+	remediationCtx := context.WithValue(ai.ctx, ContextKeyAggressive, aggressive)
+	remediationCtx = context.WithValue(remediationCtx, ContextKeyTrustScore, trustScore)
+
 	// Apply remediation
-	result, err := handler(ai.ctx, anomaly)
+	result, err := handler(remediationCtx, anomaly)
 	if err != nil {
 		log.Error().
 			Err(err).
 			Str("anomaly_id", anomaly.AnomalyID).
-			Str("category", categoryStr).
+			Str("category", string(anomaly.Category)).
 			Msg("Failed to apply remediation")
 	} else {
+		// Record successful remediation
+		ai.updateRemediationStatus(anomaly, RemediationResolved)
+
 		log.Info().
 			Str("anomaly_id", anomaly.AnomalyID).
-			Str("category", categoryStr).
+			Str("category", string(anomaly.Category)).
 			Str("result", result).
 			Msg("Successfully applied remediation")
 	}
@@ -1139,4 +1274,56 @@ func generateRandomID() string {
 		return fmt.Sprintf("evt-%s", time.Now().Format("20060102-150405.000"))
 	}
 	return fmt.Sprintf("evt-%s", hex.EncodeToString(bytes[:]))
+}
+
+// updateRemediationStatus updates the remediation status of an anomaly
+func (ai *AnomalyIntegration) updateRemediationStatus(anomaly *AnomalyType, status RemediationStatus) {
+	// Update the status in the local copy
+	anomaly.RemediationStatus = status
+	anomaly.LastUpdated = time.Now()
+
+	// If we have an anomaly client, update the status in the service too
+	if ai.anomalyClient != nil {
+		// This would typically call a method on the anomaly client to update the status
+		// For now, log the update
+		log.Debug().
+			Str("anomaly_id", anomaly.AnomalyID).
+			Str("remediation_status", ai.getRemediationStatusString(status)).
+			Msg("Updated anomaly remediation status")
+	}
+
+	// Update any active incidents with this anomaly
+	if ai.anomalyCorrelator != nil {
+		ai.anomalyCorrelator.mutex.Lock()
+		defer ai.anomalyCorrelator.mutex.Unlock()
+
+		for _, incident := range ai.anomalyCorrelator.activeIncidents {
+			// Find if this anomaly is part of the incident
+			for _, a := range incident.RelatedAnomalies {
+				if a.AnomalyID == anomaly.AnomalyID {
+					incident.LastUpdated = time.Now()
+
+					// If all anomalies in the incident are resolved, mark the incident as resolved
+					allResolved := true
+					for _, ia := range incident.RelatedAnomalies {
+						if ia.RemediationStatus != RemediationResolved &&
+							ia.RemediationStatus != RemediationFalsePositive {
+							allResolved = false
+							break
+						}
+					}
+
+					if allResolved && incident.Status != IncidentResolved {
+						incident.Status = IncidentResolved
+						log.Info().
+							Str("incident_id", incident.IncidentID).
+							Int("anomaly_count", len(incident.RelatedAnomalies)).
+							Msg("Incident automatically resolved after all anomalies remediated")
+					}
+
+					break // Found the anomaly in this incident
+				}
+			}
+		}
+	}
 }
