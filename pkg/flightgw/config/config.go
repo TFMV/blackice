@@ -49,6 +49,11 @@ type SecurityConfig struct {
 	EnableMerkleVerify  bool   `mapstructure:"enable_merkle_verify"`
 	MinTrustScore       int    `mapstructure:"min_trust_score"`
 	TrustScoreThreshold int    `mapstructure:"trust_score_threshold"`
+
+	// Post-quantum security options
+	EnablePQTLS    bool   `mapstructure:"enable_pq_tls"`
+	PQTLSAlgorithm string `mapstructure:"pq_tls_algorithm"`
+	HybridMode     bool   `mapstructure:"hybrid_mode"`
 }
 
 // LoggingConfig holds logging-specific configuration
@@ -124,6 +129,9 @@ func setDefaultConfig(v *viper.Viper) {
 	v.SetDefault("security.enable_merkle_verify", false)
 	v.SetDefault("security.min_trust_score", 0)
 	v.SetDefault("security.trust_score_threshold", 50)
+	v.SetDefault("security.enable_pq_tls", false)
+	v.SetDefault("security.pq_tls_algorithm", "KYBER768")
+	v.SetDefault("security.hybrid_mode", true)
 
 	// Logging defaults
 	v.SetDefault("logging.level", "info")

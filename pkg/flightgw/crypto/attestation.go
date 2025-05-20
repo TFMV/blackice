@@ -26,17 +26,28 @@ const (
 	SignatureAlgorithmECDSAP256SHA256 = "ECDSA-P256-SHA256"
 	SignatureAlgorithmED25519         = "ED25519"
 	SignatureAlgorithmDilithium       = "DILITHIUM3"
+	SignatureAlgorithmHybrid          = "HYBRID-DILITHIUM-ED25519"
 )
 
 // AttestationVerifier verifies attestations
 type AttestationVerifier struct {
 	initialized bool
+	providers   *ProviderRegistry
 }
 
 // NewAttestationVerifier creates a new AttestationVerifier
 func NewAttestationVerifier() (*AttestationVerifier, error) {
+	// Create provider registry
+	registry := NewProviderRegistry()
+
+	// Register providers
+	registry.RegisterProvider(NewClassicProvider())
+	registry.RegisterProvider(NewPQProvider())
+	registry.RegisterProvider(NewHybridProvider())
+
 	return &AttestationVerifier{
 		initialized: true,
+		providers:   registry,
 	}, nil
 }
 
@@ -79,18 +90,31 @@ func (v *AttestationVerifier) VerifyAttestation(
 
 	// Verify signature
 	switch attestation.GetSignatureAlgorithm() {
-	case SignatureAlgorithmRSAPKCS1SHA256:
-		return verifyRSAPKCS1Signature(publicKey, attestation.GetSignature(), data, crypto.SHA256)
-	case SignatureAlgorithmRSAPSSSHA256:
-		return verifyRSAPSSSignature(publicKey, attestation.GetSignature(), data, crypto.SHA256)
-	case SignatureAlgorithmECDSAP256SHA256:
-		return verifyECDSASignature(publicKey, attestation.GetSignature(), data, crypto.SHA256)
-	case SignatureAlgorithmED25519:
-		return verifyEd25519Signature(publicKey, attestation.GetSignature(), data)
+	case SignatureAlgorithmRSAPKCS1SHA256, SignatureAlgorithmRSAPSSSHA256,
+		SignatureAlgorithmECDSAP256SHA256, SignatureAlgorithmED25519:
+		// Classical algorithms
+		provider, err := v.providers.GetProvider("classic")
+		if err != nil {
+			return false, fmt.Errorf("failed to get classic provider: %w", err)
+		}
+		return provider.Verify(publicKey, Algorithm(attestation.GetSignatureAlgorithm()), data, attestation.GetSignature())
+
 	case SignatureAlgorithmDilithium:
-		// Post-quantum signature verification would go here
-		// We'd need to implement Dilithium verification
-		return false, fmt.Errorf("dilithium signature verification not yet implemented")
+		// Post-quantum algorithm
+		provider, err := v.providers.GetProvider("post-quantum")
+		if err != nil {
+			return false, fmt.Errorf("failed to get post-quantum provider: %w", err)
+		}
+		return provider.Verify(publicKey, Algorithm(AlgorithmDilithium3), data, attestation.GetSignature())
+
+	case SignatureAlgorithmHybrid:
+		// Hybrid algorithm
+		provider, err := v.providers.GetProvider("hybrid")
+		if err != nil {
+			return false, fmt.Errorf("failed to get hybrid provider: %w", err)
+		}
+		return provider.Verify(publicKey, Algorithm(AlgorithmHybridDilithiumED25519), data, attestation.GetSignature())
+
 	default:
 		return false, fmt.Errorf("unsupported signature algorithm: %s", attestation.GetSignatureAlgorithm())
 	}
@@ -107,26 +131,6 @@ func (v *AttestationVerifier) CreateAttestation(
 		return nil, fmt.Errorf("attestation verifier not properly initialized")
 	}
 
-	// Parse private key
-	block, _ := pem.Decode(privateKeyPEM)
-	if block == nil {
-		return nil, fmt.Errorf("failed to parse PEM block")
-	}
-
-	var (
-		privateKey interface{}
-		err        error
-	)
-
-	// Try to parse as PKCS8, PKCS1, or EC
-	if privateKey, err = x509.ParsePKCS8PrivateKey(block.Bytes); err != nil {
-		if privateKey, err = x509.ParsePKCS1PrivateKey(block.Bytes); err != nil {
-			if privateKey, err = x509.ParseECPrivateKey(block.Bytes); err != nil {
-				return nil, fmt.Errorf("failed to parse private key: %w", err)
-			}
-		}
-	}
-
 	// Calculate hash of data
 	hasher := sha256.New()
 	hasher.Write(data)
@@ -141,45 +145,46 @@ func (v *AttestationVerifier) CreateAttestation(
 		HashAlgorithm:      "SHA256",
 	}
 
-	// Calculate signature
+	// Calculate signature based on algorithm
 	var signature []byte
+
 	switch algorithm {
-	case SignatureAlgorithmRSAPKCS1SHA256:
-		rsaKey, ok := privateKey.(*rsa.PrivateKey)
-		if !ok {
-			return nil, fmt.Errorf("key is not an RSA private key")
-		}
-		signature, err = rsa.SignPKCS1v15(nil, rsaKey, crypto.SHA256, dataHash)
+	case SignatureAlgorithmRSAPKCS1SHA256, SignatureAlgorithmRSAPSSSHA256,
+		SignatureAlgorithmECDSAP256SHA256, SignatureAlgorithmED25519:
+		// Classical algorithms
+		provider, err := v.providers.GetProvider("classic")
 		if err != nil {
-			return nil, fmt.Errorf("error signing with RSA-PKCS1: %w", err)
+			return nil, fmt.Errorf("failed to get classic provider: %w", err)
 		}
 
-	case SignatureAlgorithmRSAPSSSHA256:
-		rsaKey, ok := privateKey.(*rsa.PrivateKey)
-		if !ok {
-			return nil, fmt.Errorf("key is not an RSA private key")
-		}
-		signature, err = rsa.SignPSS(nil, rsaKey, crypto.SHA256, dataHash, nil)
+		signature, err = provider.Sign(privateKeyPEM, Algorithm(algorithm), dataHash)
 		if err != nil {
-			return nil, fmt.Errorf("error signing with RSA-PSS: %w", err)
+			return nil, fmt.Errorf("failed to sign with classical algorithm: %w", err)
 		}
 
-	case SignatureAlgorithmECDSAP256SHA256:
-		ecdsaKey, ok := privateKey.(*ecdsa.PrivateKey)
-		if !ok {
-			return nil, fmt.Errorf("key is not an ECDSA private key")
-		}
-		signature, err = ecdsa.SignASN1(nil, ecdsaKey, dataHash)
+	case SignatureAlgorithmDilithium:
+		// Post-quantum algorithm
+		provider, err := v.providers.GetProvider("post-quantum")
 		if err != nil {
-			return nil, fmt.Errorf("error signing with ECDSA: %w", err)
+			return nil, fmt.Errorf("failed to get post-quantum provider: %w", err)
 		}
 
-	case SignatureAlgorithmED25519:
-		ed25519Key, ok := privateKey.(ed25519.PrivateKey)
-		if !ok {
-			return nil, fmt.Errorf("key is not an Ed25519 private key")
+		signature, err = provider.Sign(privateKeyPEM, Algorithm(AlgorithmDilithium3), dataHash)
+		if err != nil {
+			return nil, fmt.Errorf("failed to sign with Dilithium: %w", err)
 		}
-		signature = ed25519.Sign(ed25519Key, data)
+
+	case SignatureAlgorithmHybrid:
+		// Hybrid algorithm
+		provider, err := v.providers.GetProvider("hybrid")
+		if err != nil {
+			return nil, fmt.Errorf("failed to get hybrid provider: %w", err)
+		}
+
+		signature, err = provider.Sign(privateKeyPEM, Algorithm(AlgorithmHybridDilithiumED25519), dataHash)
+		if err != nil {
+			return nil, fmt.Errorf("failed to sign with hybrid algorithm: %w", err)
+		}
 
 	default:
 		return nil, fmt.Errorf("unsupported signature algorithm: %s", algorithm)
