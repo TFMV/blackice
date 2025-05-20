@@ -2,7 +2,9 @@ package crypto
 
 import (
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
+	"os"
 
 	"github.com/TFMV/blackice/pkg/flightgw/config"
 	"github.com/rs/zerolog/log"
@@ -25,6 +27,14 @@ func CreatePQTLSConfig(baseConfig *tls.Config, securityConfig config.SecurityCon
 	// Create a clone of the base config
 	config := baseConfig.Clone()
 
+	// Enable session resumption with both session tickets and session IDs
+	// This allows clients to reconnect quickly without performing full handshakes
+	config.SessionTicketsDisabled = false
+
+	// Set session cache
+	// For production, consider using a distributed cache if running multiple instances
+	config.ClientSessionCache = tls.NewLRUClientSessionCache(1000)
+
 	// Configure the curves to include the hybrid PQ KEM
 	// Note: In a real implementation, we would configure the PQ TLS options
 	// This might include:
@@ -44,16 +54,41 @@ func CreatePQTLSConfig(baseConfig *tls.Config, securityConfig config.SecurityCon
 	return config, nil
 }
 
-// CreatePQServerTLSConfig creates a server TLS configuration with post-quantum support
-func CreatePQServerTLSConfig(certPath, keyPath, caPath string, enableMTLS bool, securityConfig config.SecurityConfig) (*tls.Config, error) {
-	// Create a basic TLS config
-	baseConfig, err := createServerTLSConfig(certPath, keyPath, caPath, enableMTLS)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create base TLS config: %w", err)
+// CreatePQServerTLSConfig creates a TLS server configuration with post-quantum cryptography support
+func CreatePQServerTLSConfig(certPath, keyPath, clientCAPath string, securityConfig config.SecurityConfig) (*tls.Config, error) {
+	// Create a base TLS config
+	baseTLSConfig := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		ClientAuth: tls.RequireAndVerifyClientCert,
+		// Enable session tickets for session resumption
+		SessionTicketsDisabled: false,
+		// Set a reasonable session cache size
+		ClientSessionCache: tls.NewLRUClientSessionCache(100),
 	}
 
-	// Enhance with post-quantum crypto
-	return CreatePQTLSConfig(baseConfig, securityConfig)
+	// Load the server certificate and key
+	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load server certificate and key: %w", err)
+	}
+	baseTLSConfig.Certificates = []tls.Certificate{cert}
+
+	// Load client CA certificates if provided
+	if clientCAPath != "" {
+		clientCAPool, err := loadCACert(clientCAPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load client CA certificate: %w", err)
+		}
+		baseTLSConfig.ClientCAs = clientCAPool
+	}
+
+	// If PQ TLS is enabled, use PQ config
+	if securityConfig.EnablePQTLS {
+		return CreatePQTLSConfig(baseTLSConfig, securityConfig)
+	}
+
+	log.Info().Msg("Using standard TLS configuration")
+	return baseTLSConfig, nil
 }
 
 // CreatePQClientTLSConfig creates a client TLS configuration with post-quantum support
@@ -69,24 +104,6 @@ func CreatePQClientTLSConfig(certPath, keyPath, caPath string, skipVerify bool, 
 }
 
 // Helper functions for basic TLS config (moved from server.go)
-
-// createServerTLSConfig creates a basic TLS configuration for the server
-func createServerTLSConfig(certPath, keyPath, caPath string, enableMTLS bool) (*tls.Config, error) {
-	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load TLS key pair: %w", err)
-	}
-
-	tlsConfig := &tls.Config{
-		Certificates: []tls.Certificate{cert},
-		MinVersion:   tls.VersionTLS12,
-	}
-
-	// The code for loading CA certificates would go here
-	// This is identical to the original implementation in server.go
-
-	return tlsConfig, nil
-}
 
 // createClientTLSConfig creates a basic TLS configuration for the client
 func createClientTLSConfig(certPath, keyPath, caPath string, skipVerify bool) (*tls.Config, error) {
@@ -106,8 +123,35 @@ func createClientTLSConfig(certPath, keyPath, caPath string, skipVerify bool) (*
 		InsecureSkipVerify: skipVerify,
 	}
 
-	// The code for loading CA certificates would go here
-	// This is identical to the original implementation in server.go
+	if caPath != "" {
+		// Load CA certificate for server verification
+		caCert, err := os.ReadFile(caPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read CA certificate: %w", err)
+		}
+
+		caCertPool := x509.NewCertPool()
+		if ok := caCertPool.AppendCertsFromPEM(caCert); !ok {
+			return nil, fmt.Errorf("failed to append CA certificate")
+		}
+
+		tlsConfig.RootCAs = caCertPool
+	}
 
 	return tlsConfig, nil
+}
+
+// loadCACert loads and parses a CA certificate from the given path
+func loadCACert(path string) (*x509.CertPool, error) {
+	caCert, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read CA certificate: %w", err)
+	}
+
+	caCertPool := x509.NewCertPool()
+	if ok := caCertPool.AppendCertsFromPEM(caCert); !ok {
+		return nil, fmt.Errorf("failed to append CA certificate to pool")
+	}
+
+	return caCertPool, nil
 }

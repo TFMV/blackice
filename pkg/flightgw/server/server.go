@@ -4,24 +4,23 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
-	"strings"
+	"sync"
+	"time"
 
-	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/flight"
 	"github.com/rs/zerolog/log"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/protobuf/proto"
 
 	"github.com/TFMV/blackice/pkg/flightgw/config"
 	"github.com/TFMV/blackice/pkg/flightgw/crypto"
 	"github.com/TFMV/blackice/pkg/flightgw/trust"
-	blackicev1 "github.com/TFMV/blackice/proto/blackice/v1"
 )
 
 // SecureFlightServer is a secure implementation of the Arrow Flight server
@@ -37,6 +36,24 @@ type SecureFlightServer struct {
 	securityContext     *SecurityContext
 	initialized         bool
 	listener            net.Listener
+	healthServer        *http.Server
+	adminServer         *http.Server
+	healthStatus        *HealthStatus
+	circuitBreaker      *CircuitBreaker
+	policyManager       *PolicyManager
+}
+
+// HealthStatus contains the health status of the server and its dependencies
+type HealthStatus struct {
+	mu            sync.RWMutex
+	status        string // "healthy", "degraded", "unhealthy"
+	statusCode    int
+	upstreamOK    bool
+	securityOK    bool
+	lastCheck     time.Time
+	startTime     time.Time
+	versionInfo   string
+	detailedState map[string]interface{}
 }
 
 // SecurityContext holds security components for handlers
@@ -52,6 +69,31 @@ type SecurityContext struct {
 func NewSecureFlightServer(cfg *config.Config) (*SecureFlightServer, error) {
 	server := &SecureFlightServer{
 		cfg: cfg,
+		healthStatus: &HealthStatus{
+			status:        "starting",
+			statusCode:    http.StatusServiceUnavailable,
+			upstreamOK:    false,
+			securityOK:    false,
+			lastCheck:     time.Now(),
+			startTime:     time.Now(),
+			versionInfo:   "1.0.0", // Replace with actual version from build
+			detailedState: make(map[string]interface{}),
+		},
+		// Initialize the circuit breaker with a threshold of 5 failures and a 30 second reset timeout
+		circuitBreaker: NewCircuitBreaker(5, 30*time.Second),
+		// Initialize the policy manager
+		policyManager: NewPolicyManager("config/policies.json"),
+	}
+
+	// Load existing policies
+	if err := server.policyManager.LoadPolicies(); err != nil {
+		log.Warn().Err(err).Msg("Failed to load policies, continuing with defaults")
+	}
+
+	// Add policy manager info to health status
+	server.healthStatus.detailedState["policy_manager"] = map[string]interface{}{
+		"initialized": true,
+		"config_path": "config/policies.json",
 	}
 
 	// Initialize trust scorer
@@ -111,12 +153,32 @@ func NewSecureFlightServer(cfg *config.Config) (*SecureFlightServer, error) {
 		Registry:            server.registry,
 	}
 
+	// Security is OK if we've initialized all required components
+	server.healthStatus.securityOK = true
+	server.healthStatus.detailedState["security"] = map[string]interface{}{
+		"hmac_enabled":        cfg.Security.EnableHMAC,
+		"attestation_enabled": cfg.Security.EnableAttestations,
+		"merkle_enabled":      cfg.Security.EnableMerkleVerify,
+		"pq_enabled":          cfg.Security.EnablePQTLS,
+		"min_trust_score":     cfg.Security.MinTrustScore,
+		"trust_threshold":     cfg.Security.TrustScoreThreshold,
+	}
+
+	// Add circuit breaker info to health status
+	server.healthStatus.detailedState["circuit_breaker"] = map[string]interface{}{
+		"state":       "CLOSED",
+		"threshold":   5,
+		"reset_after": "30s",
+	}
+
 	// Create the upstream client
 	if err := server.setupUpstreamClient(); err != nil {
 		return nil, fmt.Errorf("failed to set up upstream client: %w", err)
 	}
 
 	server.initialized = true
+	server.healthStatus.status = "initialized"
+	server.healthStatus.statusCode = http.StatusOK
 	return server, nil
 }
 
@@ -128,6 +190,13 @@ func (s *SecureFlightServer) setupUpstreamClient() error {
 	// Validate configuration
 	if clientCfg.UpstreamHost == "" {
 		log.Info().Msg("No upstream host configured, skipping client setup")
+		s.healthStatus.mu.Lock()
+		s.healthStatus.upstreamOK = false
+		s.healthStatus.detailedState["upstream"] = map[string]interface{}{
+			"connected": false,
+			"reason":    "No upstream host configured",
+		}
+		s.healthStatus.mu.Unlock()
 		return nil
 	}
 
@@ -142,6 +211,13 @@ func (s *SecureFlightServer) setupUpstreamClient() error {
 			s.cfg.Security,
 		)
 		if err != nil {
+			s.healthStatus.mu.Lock()
+			s.healthStatus.upstreamOK = false
+			s.healthStatus.detailedState["upstream"] = map[string]interface{}{
+				"connected": false,
+				"reason":    fmt.Sprintf("TLS config error: %v", err),
+			}
+			s.healthStatus.mu.Unlock()
 			return fmt.Errorf("failed to create client TLS config: %w", err)
 		}
 		opts = append(opts, grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)))
@@ -153,12 +229,63 @@ func (s *SecureFlightServer) setupUpstreamClient() error {
 	// Create the connection to the upstream Flight service
 	upstreamAddr := fmt.Sprintf("%s:%d", clientCfg.UpstreamHost, clientCfg.UpstreamPort)
 
-	// Create the Flight client using the non-deprecated method
-	var err error
-	s.upstreamClient, err = flight.NewClientWithMiddleware(upstreamAddr, nil, []flight.ClientMiddleware{}, opts...)
+	// Create the Flight client with the circuit breaker pattern
+	var flightClient flight.Client
+	err := s.circuitBreaker.Execute(func() error {
+		var err error
+		// Use NewClientWithMiddleware instead of NewFlightClient
+		flightClient, err = flight.NewClientWithMiddleware(
+			upstreamAddr,
+			nil, // auth handler
+			nil, // middleware
+			opts...,
+		)
+		return err
+	})
+
 	if err != nil {
-		return fmt.Errorf("failed to create upstream Flight client: %w", err)
+		s.healthStatus.mu.Lock()
+		s.healthStatus.upstreamOK = false
+		s.healthStatus.status = "degraded"
+		s.healthStatus.detailedState["upstream"] = map[string]interface{}{
+			"connected": false,
+			"reason":    fmt.Sprintf("Connection error: %v", err),
+			"address":   upstreamAddr,
+		}
+		// Update circuit breaker info in health status
+		s.healthStatus.detailedState["circuit_breaker"] = map[string]interface{}{
+			"state":       fmt.Sprintf("%v", s.circuitBreaker.GetState()),
+			"threshold":   5,
+			"reset_after": "30s",
+		}
+		s.healthStatus.mu.Unlock()
+		return fmt.Errorf("failed to create Flight client: %w", err)
 	}
+
+	// Set the upstream client
+	s.upstreamClient = flightClient
+
+	// Update health status
+	s.healthStatus.mu.Lock()
+	s.healthStatus.upstreamOK = true
+	s.healthStatus.detailedState["upstream"] = map[string]interface{}{
+		"connected": true,
+		"address":   upstreamAddr,
+		"tls":       clientCfg.TLSCertPath != "",
+		"pq_tls":    s.cfg.Security.EnablePQTLS,
+	}
+	// Update circuit breaker info in health status
+	s.healthStatus.detailedState["circuit_breaker"] = map[string]interface{}{
+		"state":       fmt.Sprintf("%v", s.circuitBreaker.GetState()),
+		"threshold":   5,
+		"reset_after": "30s",
+	}
+	// If both upstream and security are OK, set status to healthy
+	if s.healthStatus.upstreamOK && s.healthStatus.securityOK {
+		s.healthStatus.status = "healthy"
+		s.healthStatus.statusCode = http.StatusOK
+	}
+	s.healthStatus.mu.Unlock()
 
 	log.Info().
 		Str("upstream", upstreamAddr).
@@ -170,57 +297,63 @@ func (s *SecureFlightServer) setupUpstreamClient() error {
 // Start starts the Flight server
 func (s *SecureFlightServer) Start() error {
 	if !s.initialized {
-		return fmt.Errorf("server not properly initialized")
+		return fmt.Errorf("server not initialized")
 	}
 
-	// Set up server options
-	var serverOpts []grpc.ServerOption
-
-	// Set up TLS if configured
+	// Setup TLS if configured
+	var grpcOpts []grpc.ServerOption
 	if s.cfg.Server.TLSCertPath != "" && s.cfg.Server.TLSKeyPath != "" {
-		// Use PQ TLS configuration which will incorporate post-quantum algorithms if enabled
+		log.Info().Msg("Setting up server TLS")
 		tlsConfig, err := crypto.CreatePQServerTLSConfig(
 			s.cfg.Server.TLSCertPath,
 			s.cfg.Server.TLSKeyPath,
 			s.cfg.Server.TLSCACertPath,
-			s.cfg.Server.EnableMTLS,
 			s.cfg.Security,
 		)
 		if err != nil {
-			return fmt.Errorf("failed to create TLS config: %w", err)
+			return fmt.Errorf("failed to create server TLS config: %w", err)
 		}
-		serverOpts = append(serverOpts, grpc.Creds(credentials.NewTLS(tlsConfig)))
+		grpcOpts = append(grpcOpts, grpc.Creds(credentials.NewTLS(tlsConfig)))
 	} else {
-		log.Warn().Msg("TLS is not configured, using insecure server")
+		log.Warn().Msg("TLS not configured, using insecure connection")
+		grpcOpts = append(grpcOpts, grpc.Creds(insecure.NewCredentials()))
 	}
 
-	// Create and register the secure flight service
-	svc := &secureFlightService{
+	// Create Flight service
+	flightService := &FlightServiceImpl{
 		BaseFlightServer: &flight.BaseFlightServer{},
 		server:           s,
 	}
 
-	// Create the gRPC server
-	s.grpcServer = grpc.NewServer(serverOpts...)
+	// Create gRPC server with Flight service
+	s.grpcServer = grpc.NewServer(grpcOpts...)
 
-	// Register the service with the server
-	flight.RegisterFlightServiceServer(s.grpcServer, svc)
+	// Register the Flight service
+	flight.RegisterFlightServiceServer(s.grpcServer, flightService)
 
-	// Start the server
+	// Listen on configured address
 	addr := fmt.Sprintf("%s:%d", s.cfg.Server.Host, s.cfg.Server.Port)
-	var err error
-	s.listener, err = net.Listen("tcp", addr)
+	lis, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("failed to listen on %s: %w", addr, err)
 	}
+	s.listener = lis
 
-	log.Info().
-		Str("addr", addr).
-		Bool("pq_enabled", s.cfg.Security.EnablePQTLS).
-		Msg("Starting Secure Flight Gateway")
+	// Start the health monitoring API
+	if err := s.StartHealthEndpoint(); err != nil {
+		log.Error().Err(err).Msg("Failed to start health endpoint")
+	}
+
+	// Start the admin API
+	if err := s.StartAdminAPI(); err != nil {
+		log.Error().Err(err).Msg("Failed to start admin API")
+	}
+
+	// Start the Flight server
+	log.Info().Str("addr", addr).Msg("Starting Flight server")
 	go func() {
-		if err := s.grpcServer.Serve(s.listener); err != nil {
-			log.Error().Err(err).Msg("Failed to start Flight server")
+		if err := s.grpcServer.Serve(lis); err != nil {
+			log.Error().Err(err).Msg("Flight server stopped with error")
 		}
 	}()
 
@@ -229,9 +362,29 @@ func (s *SecureFlightServer) Start() error {
 
 // Stop stops the Flight server
 func (s *SecureFlightServer) Stop() {
+	// Stop main gRPC server
 	if s.grpcServer != nil {
 		s.grpcServer.GracefulStop()
 	}
+
+	// Stop health check server if running
+	if s.healthServer != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := s.healthServer.Shutdown(ctx); err != nil {
+			log.Error().Err(err).Msg("Error shutting down health server")
+		}
+	}
+
+	// Stop admin API server if running
+	if s.adminServer != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := s.adminServer.Shutdown(ctx); err != nil {
+			log.Error().Err(err).Msg("Error shutting down admin server")
+		}
+	}
+
 	log.Info().Msg("Secure Flight Gateway stopped")
 }
 
@@ -267,7 +420,7 @@ func CreateServerTLSConfig(certPath, keyPath, caPath string, enableMTLS bool) (*
 	return tlsConfig, nil
 }
 
-// createClientTLSConfig creates a TLS configuration for the client
+// CreateClientTLSConfig creates a TLS configuration for the client
 func CreateClientTLSConfig(certPath, keyPath, caPath string, skipVerify bool) (*tls.Config, error) {
 	var certificates []tls.Certificate
 
@@ -303,546 +456,156 @@ func CreateClientTLSConfig(certPath, keyPath, caPath string, skipVerify bool) (*
 	return tlsConfig, nil
 }
 
-// secureFlightService implements the Flight service interface
-type secureFlightService struct {
-	*flight.BaseFlightServer
-	server *SecureFlightServer
-}
-
-// Handshake handles the handshake protocol
-func (s *secureFlightService) Handshake(stream flight.FlightService_HandshakeServer) error {
-	log.Debug().Msg("Handshake request received")
-
-	// Initialize authentication context
-	authContext := make(map[string]string)
-
-	// Process handshake messages
-	for {
-		req, err := stream.Recv()
-		if err != nil {
-			return err
-		}
-
-		// Extract authentication data from payload
-		if len(req.Payload) > 0 {
-			// In a production environment, this would parse authentication tokens,
-			// credentials, or certificates depending on the authentication mechanism
-
-			// Perform authentication based on the payload
-			if s.server.hmacVerifier != nil {
-				// Example: verify HMAC-based authentication token
-				// Format: hmac:<token>
-				payload := string(req.Payload)
-				if len(payload) > 5 && payload[:5] == "hmac:" {
-					token := payload[5:]
-					valid, err := s.server.hmacVerifier.VerifyHMACHex(token, []byte("handshake-auth"))
-					if err != nil {
-						log.Error().Err(err).Msg("HMAC verification failed during handshake")
-						return fmt.Errorf("authentication failed: %w", err)
-					}
-					if valid {
-						authContext["authenticated"] = "true"
-						authContext["auth_method"] = "hmac"
-						log.Info().Msg("Client authenticated via HMAC")
-					}
-				}
-			}
-
-			// Attestation-based authentication could be added here
-			if s.server.attestationVerifier != nil && s.server.registry != nil {
-				// Example: verify attestation-based authentication
-				// Format: attestation:sourceID:base64encodedAttestation
-				payload := string(req.Payload)
-				if len(payload) > 12 && payload[:12] == "attestation:" {
-					// Parse the source ID and attestation
-					parts := strings.SplitN(payload[12:], ":", 2)
-					if len(parts) == 2 {
-						sourceID := parts[0]
-						attestationData, err := base64.StdEncoding.DecodeString(parts[1])
-						if err != nil {
-							log.Error().Err(err).Msg("Failed to decode attestation data")
-							return fmt.Errorf("invalid attestation format: %w", err)
-						}
-
-						// Get the source info to retrieve the public key
-						sourceInfo, err := s.server.registry.GetSource(sourceID)
-						if err != nil {
-							log.Error().Err(err).Str("source_id", sourceID).Msg("Source not found")
-							return fmt.Errorf("unknown source: %w", err)
-						}
-
-						// Unmarshal the attestation
-						var attestation blackicev1.Attestation
-						if err := proto.Unmarshal(attestationData, &attestation); err != nil {
-							log.Error().Err(err).Msg("Failed to unmarshal attestation")
-							return fmt.Errorf("invalid attestation data: %w", err)
-						}
-
-						// Verify the attestation
-						// The data being verified is typically a nonce or timestamp
-						// that was previously sent to the client
-						valid, err := s.server.attestationVerifier.VerifyAttestation(
-							&attestation,
-							sourceInfo.PublicKey,
-							[]byte("handshake-challenge"),
-						)
-						if err != nil {
-							log.Error().Err(err).Msg("Attestation verification failed")
-							return fmt.Errorf("attestation verification failed: %w", err)
-						}
-
-						if valid {
-							authContext["authenticated"] = "true"
-							authContext["auth_method"] = "attestation"
-							authContext["source_id"] = sourceID
-							log.Info().Str("source_id", sourceID).Msg("Client authenticated via attestation")
-
-							// Update the source's last activity timestamp
-							if err := s.server.registry.UpdateSourceActivity(sourceID); err != nil {
-								log.Warn().Err(err).Str("source_id", sourceID).Msg("Failed to update source activity")
-							}
-						}
-					}
-				}
-			}
-		}
-
-		// Generate response with authentication result
-		respPayload := []byte("auth:success")
-		if authContext["authenticated"] != "true" {
-			respPayload = []byte("auth:challenge")
-		}
-
-		resp := &flight.HandshakeResponse{
-			ProtocolVersion: req.ProtocolVersion,
-			Payload:         respPayload,
-		}
-
-		if err := stream.Send(resp); err != nil {
-			return err
-		}
-
-		// If authentication is successful, we can stop the handshake
-		if authContext["authenticated"] == "true" {
-			// In a real implementation, we would store the authentication context
-			// in a session store or token manager for subsequent requests
-			break
-		}
+// StartHealthEndpoint starts an HTTP server to serve health check requests
+func (s *SecureFlightServer) StartHealthEndpoint() error {
+	if s.healthServer != nil {
+		return fmt.Errorf("health check endpoint already running")
 	}
+
+	// Create HTTP mux for health endpoint
+	mux := http.NewServeMux()
+	mux.HandleFunc("/health", s.handleHealthCheck)
+	mux.HandleFunc("/ready", s.handleReadyCheck)
+	mux.HandleFunc("/metrics", s.handleMetrics)
+
+	// Start the health check server in the background
+	addr := s.cfg.Proxy.MetricsAddr
+	if addr == "" {
+		addr = ":9090" // default to port 9090
+	}
+	s.healthServer = &http.Server{Addr: addr, Handler: mux}
+	go func() {
+		log.Info().Str("addr", addr).Msg("Starting health check endpoint")
+		if err := s.healthServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Error().Err(err).Msg("Health check server failed")
+		}
+	}()
 
 	return nil
 }
 
-// ListFlights lists available flights
-func (s *secureFlightService) ListFlights(criteria *flight.Criteria, stream flight.FlightService_ListFlightsServer) error {
-	log.Debug().Msg("ListFlights request received")
+// handleHealthCheck returns a basic health check response
+func (s *SecureFlightServer) handleHealthCheck(w http.ResponseWriter, r *http.Request) {
+	s.healthStatus.mu.RLock()
+	status := s.healthStatus.status
+	statusCode := s.healthStatus.statusCode
+	s.healthStatus.mu.RUnlock()
 
-	ctx := stream.Context()
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
 
-	// Pass through to the upstream service with security checks
-	if s.server.upstreamClient != nil {
-		upstreamStream, err := s.server.upstreamClient.ListFlights(ctx, criteria)
-		if err != nil {
-			log.Error().Err(err).Msg("Failed to list flights from upstream")
-			return err
-		}
-
-		// Stream results back to the client
-		for {
-			info, err := upstreamStream.Recv()
-			if err != nil {
-				return err
-			}
-
-			// Apply security verification and trust scoring
-			_ = 100 // Default perfect score for use in real implementation
-
-			// Apply trust scoring if enabled
-			if s.server.trustScorer != nil {
-				log.Debug().Msg("Trust scoring enabled but no implementation for ListFlights yet")
-				// In a real implementation, extract source ID and check trust score
-				// sourceID := extractSourceID(info)
-				// score, err := s.server.trustScorer.GetScore(sourceID)
-				// if err == nil {
-				//     trustScore = score.Score
-				// }
-
-				// Check if the source is trusted
-				// trusted, _ := s.server.trustScorer.IsTrusted(sourceID)
-				// if !trusted {
-				//     log.Warn().Str("source_id", sourceID).Int("score", trustScore).Msg("Untrusted source")
-				//     continue // Skip this result
-				// }
-			}
-
-			// Send to client
-			if err := stream.Send(info); err != nil {
-				return err
-			}
-		}
+	resp := map[string]interface{}{
+		"status":    status,
+		"version":   s.healthStatus.versionInfo,
+		"uptime":    time.Since(s.healthStatus.startTime).String(),
+		"timestamp": time.Now().Format(time.RFC3339),
+		"service":   "flight-gateway",
 	}
 
-	// Return empty list if no upstream
-	return nil
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		log.Error().Err(err).Msg("Failed to encode health check response as JSON")
+	}
 }
 
-// GetFlightInfo gets info about a flight
-func (s *secureFlightService) GetFlightInfo(ctx context.Context, request *flight.FlightDescriptor) (*flight.FlightInfo, error) {
-	log.Debug().Msg("GetFlightInfo request received")
+// handleReadyCheck determines if the service is ready to accept requests
+func (s *SecureFlightServer) handleReadyCheck(w http.ResponseWriter, r *http.Request) {
+	s.healthStatus.mu.RLock()
+	upstreamOK := s.healthStatus.upstreamOK
+	securityOK := s.healthStatus.securityOK
+	status := s.healthStatus.status
+	statusCode := s.healthStatus.statusCode
+	s.healthStatus.mu.RUnlock()
 
-	// Apply security checks to the request
-	// In a real implementation, we'd verify the request is valid and authorized
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
 
-	// Pass through to the upstream service
-	if s.server.upstreamClient != nil {
-		info, err := s.server.upstreamClient.GetFlightInfo(ctx, request)
-		if err != nil {
-			return nil, err
-		}
-
-		// Apply additional security checks to the result
-		// In a real implementation, we'd verify the info is valid
-
-		return info, nil
+	resp := map[string]interface{}{
+		"status":      status,
+		"ready":       status == "healthy",
+		"upstream_ok": upstreamOK,
+		"security_ok": securityOK,
+		"timestamp":   time.Now().Format(time.RFC3339),
+		"service":     "flight-gateway",
 	}
 
-	return nil, fmt.Errorf("no upstream Flight service configured")
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		log.Error().Err(err).Msg("Failed to encode ready check response as JSON")
+	}
 }
 
-// GetSchema gets the schema of a flight
-func (s *secureFlightService) GetSchema(ctx context.Context, request *flight.FlightDescriptor) (*flight.SchemaResult, error) {
-	log.Debug().Msg("GetSchema request received")
+// handleMetrics provides a basic set of metrics about the server
+func (s *SecureFlightServer) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	s.healthStatus.mu.RLock()
+	detailedState := s.healthStatus.detailedState
+	status := s.healthStatus.status
+	s.healthStatus.mu.RUnlock()
 
-	// Apply schema validation
-	// In a real implementation, we'd verify the schema meets security requirements
-
-	// Pass through to the upstream service
-	if s.server.upstreamClient != nil {
-		schema, err := s.server.upstreamClient.GetSchema(ctx, request)
-		if err != nil {
-			return nil, err
-		}
-
-		// Additional schema validation could be applied here
-
-		return schema, nil
+	w.Header().Set("Content-Type", "application/json")
+	metrics := map[string]interface{}{
+		"status":     status,
+		"uptime_sec": time.Since(s.healthStatus.startTime).Seconds(),
+		"details":    detailedState,
+		"timestamp":  time.Now().Format(time.RFC3339),
 	}
 
-	return nil, fmt.Errorf("no upstream Flight service configured")
+	if err := json.NewEncoder(w).Encode(metrics); err != nil {
+		log.Error().Err(err).Msg("Failed to encode metrics as JSON")
+	}
 }
 
-// DoGet performs a flight data get operation
-func (s *secureFlightService) DoGet(ticket *flight.Ticket, stream flight.FlightService_DoGetServer) error {
-	log.Debug().Msg("DoGet request received")
-	ctx := stream.Context()
-
-	// Verify ticket authenticity if HMAC verification is enabled
-	if s.server.hmacVerifier != nil && len(ticket.Ticket) > 0 {
-		hmacValid, err := s.server.hmacVerifier.VerifyHMAC(ticket.Ticket, []byte("flight-ticket"))
-		if err != nil {
-			log.Error().Err(err).Msg("Failed to verify ticket HMAC")
-			return fmt.Errorf("failed to verify ticket: %w", err)
-		}
-		if !hmacValid {
-			log.Warn().Msg("Invalid ticket HMAC signature")
-			return fmt.Errorf("invalid ticket signature")
-		}
-	}
-
-	// Pass through to the upstream service
-	if s.server.upstreamClient != nil {
-		upstreamStream, err := s.server.upstreamClient.DoGet(ctx, ticket)
-		if err != nil {
-			log.Error().Err(err).Msg("Failed to get data from upstream")
-			return err
-		}
-
-		// Stream data back to the client
-		_ = -1 // Initialize lastSequenceNumber for use in real implementation
-		for {
-			data, err := upstreamStream.Recv()
-			if err != nil {
-				return err
-			}
-
-			// Apply security verification
-
-			// HMAC verification example (commented out for now)
-			// if s.server.hmacVerifier != nil && data.AppMetadata != nil {
-			//     // Extract HMAC from metadata in a real implementation
-			//     hmacValid, err := s.server.hmacVerifier.VerifyHMAC(hmacBytes, data.DataBody)
-			//     if err != nil {
-			//         return fmt.Errorf("failed to verify HMAC: %w", err)
-			//     }
-			//     if !hmacValid {
-			//         return fmt.Errorf("invalid HMAC")
-			//     }
-			// }
-
-			// Merkle verification example (commented out for now)
-			// if s.server.merkleVerifier != nil {
-			//     // Extract merkle proof and sequence info in a real implementation
-			//     valid, err := s.server.merkleVerifier.VerifyStreamProof(
-			//         merkleProof, data.DataBody, sequence, isLastChunk)
-			//     if err != nil {
-			//         return fmt.Errorf("failed to verify merkle proof: %w", err)
-			//     }
-			//     if !valid {
-			//         return fmt.Errorf("invalid merkle proof")
-			//     }
-			//
-			//     // Verify sequence for anti-replay
-			//     if sequence <= lastSequenceNumber {
-			//         return fmt.Errorf("invalid sequence (potential replay attack)")
-			//     }
-			//     lastSequenceNumber = sequence
-			// }
-
-			// Send data to client
-			if err := stream.Send(data); err != nil {
-				return err
-			}
-		}
-	}
-
-	return fmt.Errorf("no upstream Flight service configured")
+// executeWithCircuitBreaker runs the given function with circuit breaker protection
+func (s *SecureFlightServer) executeWithCircuitBreaker(action func() error) error {
+	return s.circuitBreaker.Execute(action)
 }
 
-// DoPut performs a flight data put operation
-func (s *secureFlightService) DoPut(stream flight.FlightService_DoPutServer) error {
-	log.Debug().Msg("DoPut request received")
-	ctx := stream.Context()
+// getUpstreamInfo executes GetFlightInfo on the upstream client with circuit breaker protection
+func (s *SecureFlightServer) getUpstreamInfo(ctx context.Context, desc *flight.FlightDescriptor) (*flight.FlightInfo, error) {
+	var info *flight.FlightInfo
+	var err error
 
-	// Pass through to the upstream service with security verification
-	if s.server.upstreamClient != nil {
-		upstreamStream, err := s.server.upstreamClient.DoPut(ctx)
-		if err != nil {
-			log.Error().Err(err).Msg("Failed to put data to upstream")
-			return err
-		}
-
-		var schema *arrow.Schema
-		putDone := make(chan struct{})
-		errorCh := make(chan error, 2)
-
-		// Stream data to the upstream service
-		go func() {
-			_ = -1 // lastSequenceNumber for use in real implementation
-
-			for {
-				chunk, err := stream.Recv()
-				if err != nil {
-					errorCh <- err
-					close(putDone)
-					return
-				}
-
-				// Apply security verification
-
-				// Example HMAC verification (commented out for now)
-				// if s.server.hmacVerifier != nil && chunk.AppMetadata != nil {
-				//     // Extract HMAC from metadata
-				//     hmacValid, err := s.server.hmacVerifier.VerifyHMAC(hmacBytes, chunk.DataBody)
-				//     if err != nil {
-				//         errorCh <- fmt.Errorf("failed to verify HMAC: %w", err)
-				//         close(putDone)
-				//         return
-				//     }
-				//     if !hmacValid {
-				//         errorCh <- fmt.Errorf("invalid HMAC")
-				//         close(putDone)
-				//         return
-				//     }
-				// }
-
-				// Example attestation verification (commented out for now)
-				// if s.server.attestationVerifier != nil {
-				//     // Extract attestation from metadata
-				//     attestValid, err := s.server.attestationVerifier.VerifyAttestation(
-				//         attestation, publicKey, chunk.DataBody)
-				//     if err != nil {
-				//         errorCh <- fmt.Errorf("failed to verify attestation: %w", err)
-				//         close(putDone)
-				//         return
-				//     }
-				//     if !attestValid {
-				//         errorCh <- fmt.Errorf("invalid attestation")
-				//         close(putDone)
-				//         return
-				//     }
-				// }
-
-				// Send to upstream
-				if err := upstreamStream.Send(chunk); err != nil {
-					errorCh <- err
-					close(putDone)
-					return
-				}
-
-				// For the first chunk, save the schema
-				if schema == nil && chunk.GetDataHeader() != nil {
-					schema, err = flight.DeserializeSchema(chunk.GetDataHeader(), nil)
-					if err != nil {
-						log.Error().Err(err).Msg("Failed to deserialize schema")
-					}
-				}
-			}
-		}()
-
-		// Receive results from the upstream service
-		go func() {
-			for {
-				result, err := upstreamStream.Recv()
-				if err != nil {
-					errorCh <- err
-					return
-				}
-
-				if err := stream.Send(result); err != nil {
-					errorCh <- err
-					return
-				}
-			}
-		}()
-
-		// Wait for completion or error
-		select {
-		case <-putDone:
-			return nil
-		case err := <-errorCh:
-			return err
-		}
-	}
-
-	return fmt.Errorf("no upstream Flight service configured")
-}
-
-// DoExchange performs bidirectional data exchange
-func (s *secureFlightService) DoExchange(stream flight.FlightService_DoExchangeServer) error {
-	log.Debug().Msg("DoExchange request received")
-	ctx := stream.Context()
-
-	// Pass through to the upstream service with security verification
-	if s.server.upstreamClient != nil {
-		upstreamStream, err := s.server.upstreamClient.DoExchange(ctx)
-		if err != nil {
-			log.Error().Err(err).Msg("Failed to exchange data with upstream")
-			return err
-		}
-
-		errCh := make(chan error, 2)
-
-		// Handle receiving from the client and sending to upstream
-		go func() {
-			for {
-				chunk, err := stream.Recv()
-				if err != nil {
-					errCh <- err
-					return
-				}
-
-				// Here we'd implement security verification
-
-				if err := upstreamStream.Send(chunk); err != nil {
-					errCh <- err
-					return
-				}
-			}
-		}()
-
-		// Handle receiving from upstream and sending to the client
-		go func() {
-			for {
-				chunk, err := upstreamStream.Recv()
-				if err != nil {
-					errCh <- err
-					return
-				}
-
-				// Here we'd implement security verification for responses
-
-				if err := stream.Send(chunk); err != nil {
-					errCh <- err
-					return
-				}
-			}
-		}()
-
-		// Wait for an error from either goroutine
-		err = <-errCh
+	err = s.executeWithCircuitBreaker(func() error {
+		info, err = s.upstreamClient.GetFlightInfo(ctx, desc)
 		return err
-	}
+	})
 
-	return fmt.Errorf("no upstream Flight service configured")
+	return info, err
 }
 
-// DoAction performs an action
-func (s *secureFlightService) DoAction(action *flight.Action, stream flight.FlightService_DoActionServer) error {
-	log.Debug().Str("action", action.Type).Msg("DoAction request received")
-	ctx := stream.Context()
+// getUpstreamSchema executes GetSchema on the upstream client with circuit breaker protection
+func (s *SecureFlightServer) getUpstreamSchema(ctx context.Context, desc *flight.FlightDescriptor) (*flight.SchemaResult, error) {
+	var schema *flight.SchemaResult
+	var err error
 
-	// Apply security verification for the action
-	// In a real implementation, we'd verify the action is authorized
+	err = s.executeWithCircuitBreaker(func() error {
+		schema, err = s.upstreamClient.GetSchema(ctx, desc)
+		return err
+	})
 
-	// Pass through to the upstream service
-	if s.server.upstreamClient != nil {
-		upstreamStream, err := s.server.upstreamClient.DoAction(ctx, action)
-		if err != nil {
-			log.Error().Err(err).Msg("Failed to perform action upstream")
-			return err
-		}
-
-		// Stream results back to the client
-		for {
-			result, err := upstreamStream.Recv()
-			if err != nil {
-				return err
-			}
-
-			// Apply security verification for the result
-			// In a real implementation, we'd verify the result is valid
-
-			if err := stream.Send(result); err != nil {
-				return err
-			}
-		}
-	}
-
-	return fmt.Errorf("no upstream Flight service configured")
+	return schema, err
 }
 
-// ListActions lists available actions
-func (s *secureFlightService) ListActions(empty *flight.Empty, stream flight.FlightService_ListActionsServer) error {
-	log.Debug().Msg("ListActions request received")
-	ctx := stream.Context()
+// doUpstreamGet executes DoGet on the upstream client with circuit breaker protection
+func (s *SecureFlightServer) doUpstreamGet(ctx context.Context, ticket *flight.Ticket) (flight.FlightService_DoGetClient, error) {
+	var reader flight.FlightService_DoGetClient
+	var err error
 
-	// Apply security filtering
-	// In a real implementation, we'd filter actions based on permissions
+	err = s.executeWithCircuitBreaker(func() error {
+		reader, err = s.upstreamClient.DoGet(ctx, ticket)
+		return err
+	})
 
-	// Pass through to the upstream service
-	if s.server.upstreamClient != nil {
-		upstreamStream, err := s.server.upstreamClient.ListActions(ctx, empty)
-		if err != nil {
-			log.Error().Err(err).Msg("Failed to list actions from upstream")
-			return err
-		}
+	return reader, err
+}
 
-		// Stream results back to the client
-		for {
-			action, err := upstreamStream.Recv()
-			if err != nil {
-				return err
-			}
+// doUpstreamPut executes DoPut on the upstream client with circuit breaker protection
+func (s *SecureFlightServer) doUpstreamPut(ctx context.Context) (flight.FlightService_DoPutClient, error) {
+	var writer flight.FlightService_DoPutClient
+	var err error
 
-			// Apply security filtering for the action
-			// In a real implementation, we'd filter actions based on permissions
+	err = s.executeWithCircuitBreaker(func() error {
+		writer, err = s.upstreamClient.DoPut(ctx)
+		return err
+	})
 
-			if err := stream.Send(action); err != nil {
-				return err
-			}
-		}
-	}
-
-	// Return empty result if no upstream
-	return nil
+	return writer, err
 }
