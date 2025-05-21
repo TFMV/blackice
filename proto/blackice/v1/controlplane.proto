@@ -1,0 +1,348 @@
+syntax = "proto3";
+
+package blackice.v1;
+
+import "blackice/proto/blackice/v1/common.proto";
+
+option go_package = "github.com/TFMV/blackice/proto/blackice/v1;blackicev1";
+
+// ControlPlaneService provides centralized management, configuration, and monitoring
+// capabilities for BlackIce while maintaining zero-trust principles and attestation requirements.
+service ControlPlaneService {
+  // GetSystemStatus retrieves status information for all system components
+  rpc GetSystemStatus(GetSystemStatusRequest) returns (SystemStatusResponse);
+  
+  // ManageConfiguration handles updates to system configuration
+  rpc ManageConfiguration(ManageConfigurationRequest) returns (ConfigurationResponse);
+  
+  // ListComponents returns information on all registered system components
+  rpc ListComponents(ListComponentsRequest) returns (ListComponentsResponse);
+  
+  // GetAuditHistory retrieves audit logs with filtering and pagination
+  rpc GetAuditHistory(GetAuditHistoryRequest) returns (GetAuditHistoryResponse);
+  
+  // ExecuteControlCommand executes an administrative command on a component
+  rpc ExecuteControlCommand(ExecuteControlCommandRequest) returns (ExecuteControlCommandResponse);
+}
+
+// AuthService provides authentication, authorization, and access control
+// for all operations against the BlackIce system.
+service AuthService {
+  // AuthenticateUser authenticates a user and returns a session token
+  rpc AuthenticateUser(AuthenticateUserRequest) returns (AuthenticationResponse);
+  
+  // ValidateToken validates a session token and returns claims
+  rpc ValidateToken(ValidateTokenRequest) returns (TokenValidationResponse);
+  
+  // AuthorizeOperation checks if a user has permission for a specific operation
+  rpc AuthorizeOperation(AuthorizeOperationRequest) returns (AuthorizationResponse);
+  
+  // ManageRoles creates, updates, or deletes roles 
+  rpc ManageRoles(ManageRolesRequest) returns (ManageRolesResponse);
+  
+  // ManagePermissions assigns or revokes permissions for roles
+  rpc ManagePermissions(ManagePermissionsRequest) returns (ManagePermissionsResponse);
+  
+  // CreateAttestationChallenge creates a challenge for hardware attestation
+  rpc CreateAttestationChallenge(CreateAttestationChallengeRequest) returns (AttestationChallengeResponse);
+  
+  // VerifyAttestation verifies the response to an attestation challenge
+  rpc VerifyAttestation(VerifyAttestationRequest) returns (VerifyAttestationResponse);
+}
+
+// Common Types
+message SystemComponent {
+  string component_id = 1;
+  string component_type = 2;  // e.g., "StorageService", "PanicService"
+  string version = 3;
+  NodeHealth health = 4;
+  int64 last_heartbeat_unix_ns = 5;
+  map<string, string> metadata = 6;
+}
+
+message Permission {
+  string resource = 1;      // e.g., "storage", "panic", "anomaly"
+  string action = 2;        // e.g., "read", "write", "execute"
+  string condition = 3;     // Optional condition expression
+}
+
+message Role {
+  string id = 1;
+  string name = 2;
+  string description = 3;
+  repeated Permission permissions = 4;
+  int64 created_at_unix_ns = 5;
+  int64 updated_at_unix_ns = 6;
+}
+
+message User {
+  string id = 1;
+  string username = 2;
+  string email = 3;
+  repeated string role_ids = 4;
+  UserStatus status = 5;
+  repeated AuthenticationFactor auth_factors = 6;
+}
+
+enum UserStatus {
+  USER_STATUS_UNSPECIFIED = 0;
+  USER_STATUS_ACTIVE = 1;
+  USER_STATUS_INACTIVE = 2;
+  USER_STATUS_LOCKED = 3;
+  USER_STATUS_PENDING_VERIFICATION = 4;
+}
+
+message AuthenticationFactor {
+  string factor_id = 1;
+  AuthFactorType type = 2;
+  int64 enrolled_at_unix_ns = 3;
+  int64 last_used_at_unix_ns = 4;
+  map<string, string> metadata = 5;
+}
+
+enum AuthFactorType {
+  AUTH_FACTOR_TYPE_UNSPECIFIED = 0;
+  AUTH_FACTOR_TYPE_PASSWORD = 1;
+  AUTH_FACTOR_TYPE_TOTP = 2;
+  AUTH_FACTOR_TYPE_HARDWARE_KEY = 3;
+  AUTH_FACTOR_TYPE_CERTIFICATE = 4;
+  AUTH_FACTOR_TYPE_BIOMETRIC = 5;
+}
+
+message AuditLogEntry {
+  string id = 1;
+  string user_id = 2;
+  string component_id = 3;
+  string action = 4;
+  string resource = 5;
+  string resource_id = 6;
+  int64 timestamp_unix_ns = 7;
+  Status status = 8;
+  map<string, string> metadata = 9;
+  Attestation attestation = 10;
+  bytes request_data_hash = 11;  // SHA-256 hash of request data
+  bytes response_data_hash = 12; // SHA-256 hash of response data
+}
+
+// Request and Response Types for ControlPlaneService
+message GetSystemStatusRequest {
+  repeated string component_ids = 1; // Optional: filter by component IDs
+  repeated string component_types = 2; // Optional: filter by component types
+}
+
+message SystemStatusResponse {
+  Status status = 1;
+  repeated SystemComponent components = 2;
+  map<string, AlertSummary> active_alerts = 3;
+  SystemResourceSummary resources = 4;
+}
+
+message AlertSummary {
+  int32 critical_count = 1;
+  int32 high_count = 2;
+  int32 medium_count = 3;
+  int32 low_count = 4;
+  repeated string critical_alert_ids = 5; // Top critical alerts
+}
+
+message SystemResourceSummary {
+  double cpu_usage_percent = 1;
+  double memory_usage_percent = 2;
+  double storage_usage_percent = 3;
+  int64 total_active_connections = 4;
+  int64 total_events_per_second = 5;
+}
+
+message ManageConfigurationRequest {
+  string component_id = 1;
+  string config_section = 2;
+  oneof operation {
+    bytes update_config_json = 3;
+    bool reset_to_default = 4;
+  }
+  Attestation admin_attestation = 5;
+}
+
+message ConfigurationResponse {
+  Status status = 1;
+  string operation_id = 2;
+  LedgerEntry ledger_entry_confirmation = 3;
+}
+
+message ListComponentsRequest {
+  repeated string component_types = 1;
+  bool include_health = 2;
+  string page_token = 3;
+  int32 page_size = 4;
+}
+
+message ListComponentsResponse {
+  Status status = 1;
+  repeated SystemComponent components = 2;
+  string next_page_token = 3;
+}
+
+message GetAuditHistoryRequest {
+  int64 start_time_unix_ns = 1;
+  int64 end_time_unix_ns = 2;
+  repeated string user_ids = 3;
+  repeated string component_ids = 4;
+  repeated string action_types = 5;
+  repeated string resource_types = 6;
+  string page_token = 7;
+  int32 page_size = 8;
+}
+
+message GetAuditHistoryResponse {
+  Status status = 1;
+  repeated AuditLogEntry audit_logs = 2;
+  string next_page_token = 3;
+}
+
+message ExecuteControlCommandRequest {
+  string component_id = 1;
+  string command = 2;
+  bytes command_parameters = 3;
+  Attestation admin_attestation = 4;
+}
+
+message ExecuteControlCommandResponse {
+  Status status = 1;
+  bytes result = 2;
+  string operation_id = 3;
+  LedgerEntry ledger_entry_confirmation = 4;
+}
+
+// Request and Response Types for AuthService
+message AuthenticateUserRequest {
+  string username = 1;
+  oneof auth_factor {
+    PasswordCredential password_credential = 2;
+    HardwareKeyCredential hardware_key_credential = 3;
+    TOTPCredential totp_credential = 4;
+    CertificateCredential certificate_credential = 5;
+  }
+  map<string, string> auth_metadata = 6;
+}
+
+message PasswordCredential {
+  string password_hash = 1;
+}
+
+message HardwareKeyCredential {
+  bytes challenge_response = 1;
+  string key_id = 2;
+}
+
+message TOTPCredential {
+  string totp_code = 1;
+}
+
+message CertificateCredential {
+  bytes client_certificate = 1;
+  bytes signature = 2;
+}
+
+message AuthenticationResponse {
+  Status status = 1;
+  string session_token = 2;
+  int64 expiry_unix_ns = 3;
+  string refresh_token = 4;
+  User user = 5;
+  repeated string permissions = 6;
+}
+
+message ValidateTokenRequest {
+  string token = 1;
+}
+
+message TokenValidationResponse {
+  Status status = 1;
+  string user_id = 2;
+  repeated string role_ids = 3;
+  repeated string permissions = 4;
+  int64 expiry_unix_ns = 5;
+}
+
+message AuthorizeOperationRequest {
+  string user_id = 1;
+  string resource = 2;
+  string action = 3;
+  string resource_id = 4;
+  map<string, string> context = 5;
+  Attestation user_attestation = 6;
+}
+
+message AuthorizationResponse {
+  Status status = 1;
+  bool authorized = 2;
+  string reason = 3;
+  repeated string missing_permissions = 4;
+}
+
+message ManageRolesRequest {
+  oneof operation {
+    Role create_role = 1;
+    Role update_role = 2;
+    string delete_role_id = 3;
+  }
+  Attestation admin_attestation = 4;
+}
+
+message ManageRolesResponse {
+  Status status = 1;
+  string role_id = 2;
+  LedgerEntry ledger_entry_confirmation = 3;
+}
+
+message ManagePermissionsRequest {
+  string role_id = 1;
+  oneof operation {
+    PermissionSet add_permissions = 2;
+    PermissionSet remove_permissions = 3;
+  }
+  Attestation admin_attestation = 4;
+}
+
+message PermissionSet {
+  repeated Permission permissions = 1;
+}
+
+message ManagePermissionsResponse {
+  Status status = 1;
+  LedgerEntry ledger_entry_confirmation = 2;
+}
+
+message CreateAttestationChallengeRequest {
+  string user_id = 1;
+  string device_id = 2;
+  AttestationType attestation_type = 3;
+}
+
+enum AttestationType {
+  ATTESTATION_TYPE_UNSPECIFIED = 0;
+  ATTESTATION_TYPE_WEBAUTHN = 1;
+  ATTESTATION_TYPE_TPM = 2;
+  ATTESTATION_TYPE_HSM = 3;
+  ATTESTATION_TYPE_SECURE_ENCLAVE = 4;
+}
+
+message AttestationChallengeResponse {
+  Status status = 1;
+  string challenge_id = 2;
+  bytes challenge_data = 3;
+  int64 expiry_unix_ns = 4;
+}
+
+message VerifyAttestationRequest {
+  string challenge_id = 1;
+  bytes attestation_data = 2;
+  string device_id = 3;
+  AttestationType attestation_type = 4;
+}
+
+message VerifyAttestationResponse {
+  Status status = 1;
+  bool verified = 2;
+  string verification_id = 3;
+} 
