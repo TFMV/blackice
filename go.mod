@@ -6,7 +6,9 @@ require (
 	github.com/apache/arrow-go/v18 v18.3.0
 	github.com/cloudflare/circl v1.6.1
 	github.com/google/uuid v1.6.0
+	github.com/gorilla/mux v1.8.1
 	github.com/prometheus/client_golang v1.19.0
+	github.com/rs/cors v1.11.1
 	github.com/rs/zerolog v1.34.0
 	github.com/spf13/viper v1.20.1
 	github.com/stretchr/testify v1.10.0
@@ -15,6 +17,7 @@ require (
 	go.opentelemetry.io/otel/metric v1.34.0
 	go.opentelemetry.io/otel/sdk v1.34.0
 	go.opentelemetry.io/otel/sdk/metric v1.34.0
+	golang.org/x/crypto v0.37.0
 	golang.org/x/time v0.11.0
 	google.golang.org/grpc v1.72.0
 	google.golang.org/protobuf v1.36.6
