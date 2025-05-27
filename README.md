@@ -1,345 +1,154 @@
-# blackice
+<p align="center">
+  <img src="logo/blackice-logo.svg" alt="BlackIce" height="120"/>
+</p>
 
-# Secure Flight Gateway
+<p align="center">
+  <a href="https://goreportcard.com/report/github.com/TFMV/blackice"><img src="https://goreportcard.com/badge/github.com/TFMV/blackice" alt="Go Report Card"/></a>
+  <a href="https://github.com/TFMV/blackice/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License: MIT"/></a>
+  <a href="https://pkg.go.dev/github.com/TFMV/blackice"><img src="https://pkg.go.dev/badge/github.com/TFMV/blackice.svg" alt="Go Reference"/></a>
+</p>
 
-The Secure Flight Gateway is a zero-trust proxy for Apache Arrow Flight traffic, providing a secure integration point for BlackIce. It adds cryptographic verification, dynamic trust scoring, and security monitoring while maintaining high performance.
+# BlackIce
 
-## Features
+> Betrayal-resilient data infrastructure that plans for compromise – and survives it.
 
-- **Bidirectional Flight Proxy**: Forward and verify Arrow Flight traffic between clients and upstream services
-- **Security Verification**: HMAC validation, Merkle stream verification, and attestation verification
-- **Trust Scoring**: Evaluate and score data sources based on multiple factors
-- **Multiple Operational Modes**:
-  - Pass-through mode: Minimal validation and forwarding
-  - Trust-boundary mode: Full security verification and trust enforcement
-  - Transformation mode: Data processing during transit
-- **Post-Quantum Security**: Hybrid and PQ cryptography support with Kyber and Dilithium
-- **Access Control**: Fine-grained policy-based access controls for data access
-- **Advanced Circuit Breaker**: Military-grade resilience with adaptive thresholds and advanced posture states
-- **Advanced Telemetry Framework**:
-  - Integrated metrics collection via Prometheus and OpenTelemetry
-  - Zero-trust secure telemetry endpoints with authentication
-  - Comprehensive security and performance metrics
-  - Support for high-assurance environments
+BlackIce is a zero-trust data platform built around the conviction that **compromise is inevitable**. Instead of pretending attacks will never land, BlackIce designs for the _aftermath_: immediate containment, cryptographic provenance, adaptive degradation and forensic-first recovery – all while keeping the data moving.
 
-## Trust Scoring System
+_Not fail-safe. Breach-resilient. Tamper-aware. Unafraid._
 
-The BlackIce Flight Gateway includes a sophisticated trust scoring system with the following capabilities:
+---
 
-- **Dynamic Multi-Category Trust Evaluation**: Scores data sources across multiple dimensions:
-  - Consistency: Statistical properties compared to historical patterns
-  - Timing: Detection of anomalous submission patterns
-  - Verification: Tracking of cryptographic validation failures
-  - External: Integration with third-party threat intelligence
-  - Content, Schema, Volume, Network: Advanced behavioral analysis
+## ✨ Highlights
 
-- **System-Wide Threat Intelligence**:
-  - Automated threat feed integration
-  - Global threat level management
-  - Defensive posture adjustments based on threat conditions
-  - Cross-source consensus analysis
+| Feature | What it buys you |
+|---------|------------------|
+| 🚀 **Zero-Trust Flight Gateway** | PQ-TLS, Merkle integrity & adaptive circuit-breakers without sacrificing throughput. |
+| 🛰 **Control Plane** | Signed config ledger, real-time fleet health, live policy pushes. |
+| 🌀 **Mutation-Aware Storage** | Iceberg-style versioning with cryptographic commits & predictive rollback. |
+| 🔍 **Self-Doubt Pipelines** | Behaviour + content anomaly detection that can auto-isolate or burn-back. |
+| 🌩 **Decentralised Fallback** | Reed-Solomon / Shamir-sharded backups—survive region loss or legal seizure. |
 
-- **Adaptive Trust Tiers**:
-  - Five-tier trust classification system
-  - Detailed requirements for each tier
-  - Automatic tier transitions based on behavior
+---
 
-- **Temporal Pattern Analysis**:
-  - Detection of abnormal behavior patterns over time
-  - Sophisticated anomaly detection with confidence scoring
-  - Trust trends and anomaly rate tracking
+## 🏗️ Layered Architecture
 
-## Circuit Breaker System
-
-The gateway includes a resilient circuit breaker implementation:
-
-- **Standard Circuit Breaker Patterns**: Three-state operation (Open, Closed, Half-Open)
-- **Tiered Operational Modes**: Normal, Restricted, Emergency postures
-- **Context-Aware Decisions**: Adjusts behavior based on system-wide conditions
-- **Adaptive Thresholds**: Learns and adjusts failure thresholds over time
-
-## Usage
-
-```
-go run cmd/flightgw/main.go -config path/to/config.yaml
+```txt
+┌─────────────────────────────────────────────────────────────┐
+│           Control Plane  (gRPC + Signed Ledger)             │
+└─────────────────────────────────────────────────────────────┘
+            ▲                      ▲                  
+            │                      │                  
+            │ Health / Policy      │ Panic Escalation 
+            │                      │                  
+┌───────────┴──────────┐   ┌───────┴───────┐    ┌──-──────-────────┐
+│  Secure Flight GW    │ ← │ Anomaly Engine │ ← │  Panic Service   │
+│  (pkg/flightgw)      │   └────────────────┘   └──────────────────┘
+│  HMAC ▪ PQ-TLS ▪ CB  │                                     
+└─────────┬────────────┘                                     
+          │  Arrow Flight                                    
+┌─────────┴────────────┐                                     
+│    Data Stores       │  🗄️  Iceberg ▪ DuckDB ▪ S3 ▪ Storj/IPFS
+└──────────────────────┘                                     
 ```
 
-## Configuration
+_Every layer can operate independently, yet all layers sign each other's work – creating an immutable chain-of-custody from raw ingress to long-term archive._
 
-See example config in `config/example-config.yaml`
+---
 
-## Contributing
-
-Contributions welcome! See CONTRIBUTING.md
-
-## License
-
-© BlackIce Collective
-
-## Getting Started
-
-### Prerequisites
-
-- Go 1.18+
-- Apache Arrow Flight
-- Docker (optional)
-
-### Building
+## 🚀 Quick Start
 
 ```bash
-cd blackice
-go build -o bin/flightgw cmd/flightgw/main.go
+set -euo pipefail
+
+# 1. Install CLI tools
+go install github.com/TFMV/blackice/cmd/flightdata@latest
+go install github.com/TFMV/blackice/cmd/flightclient@latest
+
+# 2. Start an in-memory Secure Flight Gateway
+flightdata --listen 0.0.0.0:8815 --ttl 10m
+
+# 3. In another terminal, push & fetch a demo Arrow RecordBatch
+flightclient put --file demo.arrow
+flightclient get --ticket demo.arrow
 ```
 
-### Running with Docker
+**Docker one-liner:**
 
 ```bash
-cd blackice
-docker build -t blackice/flightgw -f cmd/flightgw/Dockerfile .
-docker run -p 8815:8815 -p 9090:9090 -p 9091:9091 blackice/flightgw
+docker run -p 8815:8815 -p 9090:9090 ghcr.io/tfmv/blackice/flightdata:latest
 ```
 
-### Configuration
+---
 
-The Secure Flight Gateway is configured via a YAML file:
+## 🧩 Core Components
 
-```bash
-bin/flightgw -config cmd/flightgw/config.yaml
+| Component | Purpose | Key Features |
+|-----------|---------|--------------|
+| **Secure Flight Gateway** <br/> `pkg/flightgw` | Drop-in Arrow Flight proxy with zero-trust defaults | • Post-Quantum gRPC-TLS (Kyber-x25519-HMAC)<br/>• SHA-256 HMAC per batch, optional Merkle stream verification<br/>• Battle-tested circuit-breaker with five-tier postures<br/>• Dynamic Trust Scoring across ten behavioural dimensions |
+| **Control Plane** <br/> `pkg/controlplane` | Central nervous system that keeps every BlackIce node honest | • AuthN/Z pluggable providers, hardware-rooted attestations<br/>• Real-time component registry with heartbeat-based liveness<br/>• Signed configuration ledger with provenance and diffs<br/>• gRPC API from `proto/blackice/v1/controlplane.proto` |
+| **Telemetry & Anomaly Detection** <br/> `pkg/flightgw/telemetry` | Multi-modal threat detection | • OpenTelemetry pipelines, Prometheus/Grafana export<br/>• High-dimensional detectors (Isolation Forest, VAEs, DBSCAN)<br/>• <0.1% false-positive rate, MITRE ATT&CK mapping |
+| **Panic Service** <br/> `proto/blackice/v1/panic.proto` | Coordinated incident response | • Tier-0 … Tier-5 escalation, burn-back coordination<br/>• Multi-party attestation, immutable forensic ledger |
+
+---
+
+## 📊 Stability Matrix
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Flight Gateway | **Beta** | Production-ready, API stable |
+| Control Plane | **Alpha** | Core features complete, API evolving |
+| Anomaly Detection | **Beta** | High accuracy, tuning ongoing |
+| Panic Service | **Alpha** | Protocol stable, implementation maturing |
+| CLI Tools | **Stable** | Ready for daily use |
+
+---
+
+## 📂 Repository Map
+
+```text
+art/                 ↳ Vision documents, logos, diagrams
+cmd/                 ↳ CLI entry-points (flightdata, flightserver, flightclient …)
+proto/               ↳ gRPC / protobuf contracts
+pkg/                 ↳ Production Go packages
+  ├── controlplane/  ↳ Fleet orchestration & policy engine
+  └── flightgw/      ↳ Zero-trust Arrow Flight gateway & helpers
+       ├── server/        ↳ Flight server implementations
+       ├── proxy/         ↳ Reverse proxy logic
+       ├── crypto/        ↳ HMAC, PQ-TLS, Merkle, attestations
+       ├── trust/         ↳ Dynamic trust scoring
+       ├── anomaly/       ↳ Detectors & alert lifecycle
+       └── telemetry/     ↳ Metrics, tracing, logging
 ```
 
-See `cmd/flightgw/config.yaml` for configuration options.
+---
 
-## Health Monitoring
+## 🛠 Development
 
-The gateway exposes health check endpoints for monitoring and integration with orchestration systems:
+1. **Prerequisites:** Go 1.24+ and `buf` (for protobuf)
+2. **Build & Test:** `make lint test` – runs `golangci-lint`, unit tests and race detector
+3. **Protobuf:** `make proto` to regenerate gRPC stubs
+4. **Dev Environment:** `make dev-shell` for containerized development
 
-- `/health`: Basic health status endpoint
-- `/ready`: Readiness check for load balancers
-- `/metrics`: Detailed metrics for monitoring systems
+Linter config lives in `.golangci.yml`; CI runs on GitHub Actions.
 
-## Military-Grade Circuit Breaker
+---
 
-The gateway implements a military-grade circuit breaker pattern that provides enhanced resilience against cascading failures and sophisticated attacks:
+## 🤝 Contributing
 
-### Multi-Tier Protection
+Bug reports, feature ideas and pull requests are welcome!
 
-- 5 operational tiers (Normal, Cautious, Restricted, Minimal, Emergency)
-- Automated tier adjustments based on failure patterns
-- Different thresholds and timeouts for each tier level
+- 📖 **Documentation:** [GitHub Pages](https://tfmv.github.io/blackice)
+- 💬 **Chat:** Join `#blackice` on [Matrix](https://matrix.to/#/#blackice:matrix.org)
+- 🐛 **Good First Issues:** [Help wanted](https://github.com/TFMV/blackice/labels/good%20first%20issue)
 
-### Context-Aware Decision Making
+Please see `CONTRIBUTING.md` for guidelines.
 
-- Priority-based request handling allows critical operations to bypass circuit breaker
-- Request categorization for fine-grained failure handling
-- Configurable policies for different request types
+---
 
-### Advanced Failure Detection
+## 📜 License
 
-- Categorized failures with specialized handling for security-related issues
-- Latency-based circuit breaking to detect degraded performance
-- Attack pattern recognition through error fingerprinting
+```
+SPDX-License-Identifier: MIT
+```
 
-### Self-Healing Capabilities
-
-- Automatic recovery mechanisms with graduated healing
-- Configurable retry strategies with backoff and jitter
-- Manual intervention capabilities through admin API
-
-### Integration with System-Wide Protection
-
-- Coordination with Panic Service for comprehensive threat response
-- Graceful degradation during system-wide emergencies
-- Detailed telemetry for post-incident analysis
-
-### Admin API Endpoints
-
-- `/admin/circuit/state`: Get current circuit breaker state
-- `/admin/circuit/force`: Manually force circuit open/closed
-- `/admin/circuit/tier`: Adjust protection tier
-- `/admin/circuit/metrics`: View performance metrics
-- `/admin/circuit/failures`: Analyze recent failures and detected patterns
-- `/admin/circuit/recovery`: Manage self-healing capabilities
-
-## Dynamic Trust Scoring System
-
-The gateway implements a military-grade dynamic trust scoring system that automatically evaluates and adjusts confidence in data sources based on behavioral patterns and contextual factors.
-
-### Multi-dimensional Trust Evaluation
-
-- 10 evaluation categories (Consistency, Timing, Verification, External, Volume, Schema, Content, Behavioral, Network, Contextual)
-- Weighted scoring algorithm with configurable category importance
-- Tiered trust levels with graduated requirements for advancement
-
-### Behavioral Pattern Analysis
-
-- Automated baseline establishment through statistical modeling
-- Real-time anomaly detection using standard deviation analysis
-- Pattern correlation across multiple behavioral dimensions
-- Contextual awareness of system-wide patterns and threats
-
-### Advanced Anomaly Detection
-
-- Z-score based outlier identification with configurable thresholds
-- Graduated severity levels (Info, Low, Medium, High, Critical)
-- Multi-factor anomaly classification with confidence scoring
-- Time-series analysis for identifying subtle behavioral shifts
-
-### Self-adapting Trust Mechanisms
-
-- Dynamic threshold adjustment based on historical patterns
-- Category-specific learning rates for optimized adaptation
-- Temporal decay functions to emphasize recent behavioral data
-- Configurable adaptation modes (Conservative, Balanced, Aggressive)
-
-### Integration with Security Systems
-
-- Threat intelligence feed integration for external validation
-- Coordination with Panic Service during system-wide incidents
-- Contextual trust adjustments based on system threat level
-- Forensic evidence capture for security investigations
-
-### Trust Management API Endpoints
-
-- `/admin/trust/sources`: Manage registered data sources
-- `/admin/trust/scores`: View and adjust trust scores
-- `/admin/trust/anomalies`: Review detected behavioral anomalies
-- `/admin/trust/patterns`: Examine established behavioral patterns
-- `/admin/trust/thresholds`: Configure adaptive threshold settings
-- `/admin/trust/tiers`: View and manage trust tier requirements
-
-## Comprehensive Anomaly Detection System
-
-The gateway implements a sophisticated anomaly detection system that monitors system behavior in real-time and identifies potential security threats:
-
-### Advanced Detection Mechanisms
-
-- Multiple specialized detectors working in parallel:
-  - Statistical Threshold Detector for metric-based anomalies
-  - Volume Anomaly Detector for unusual event frequencies
-  - Behavioral Pattern Detector for suspicious activity sequences
-- Adaptive sensitivity with configurable thresholds and baselines
-- Machine learning-ready architecture for future enhancements
-
-### MITRE ATT&CK Framework Integration
-
-- Automatic mapping of anomalies to MITRE ATT&CK techniques
-- TTP (Tactics, Techniques, Procedures) identification
-- Standardized threat classification for security operations
-- Threat intelligence compatibility with external systems
-
-### Complete Anomaly Lifecycle Management
-
-- End-to-end tracking from detection through resolution
-- Remediation status tracking (Pending, In Progress, Resolved, etc.)
-- Analyst feedback loop to improve detection accuracy
-- False positive management and tuning capabilities
-
-### Rich Contextual Information
-
-- Comprehensive anomaly context for investigation:
-  - Affected resources identification
-  - Related events correlation
-  - Categorized anomaly classification
-  - Confidence scoring for prioritization
-- Time-series tracking with update and analysis timestamps
-
-### Integration with BlackIce Ecosystem
-
-- Seamless telemetry system integration for data collection
-- Trust score adjustment based on detected anomalies
-- Panic system escalation for critical security events
-- Cross-component correlation for system-wide threat analysis
-
-### Anomaly Management API Endpoints
-
-- `/admin/anomaly/detectors`: Manage and configure anomaly detectors
-- `/admin/anomaly/anomalies`: Query and investigate detected anomalies
-- `/admin/anomaly/feedback`: Provide analyst feedback on detections
-- `/admin/anomaly/status`: View detector operational status and health
-
-## Advanced Telemetry Framework
-
-The gateway includes a high-assurance telemetry system that provides comprehensive visibility while maintaining security:
-
-### Integrated Metrics Collection
-
-- Metrics are core to the system, not a bolt-on component
-- Hooks architecture for automatic metric emission during normal operations
-- Complete visibility into circuit breaker state, trust scores, and system health
-- Automatic metric generation with minimal code overhead
-
-### Industry-Standard Protocols
-
-- Support for Prometheus metrics exposition
-- OpenTelemetry integration for distributed tracing
-- Structured logging with correlation IDs
-- Metrics endpoint with RBAC and authentication
-
-### Security-First Design
-
-- Configurable metric security levels for sensitive data
-- Rate limiting for metrics endpoints to prevent DoS
-- Authentication and authorization for metrics access
-- Metrics sanitization to prevent information leakage
-
-### Comprehensive System Observability
-
-- Circuit breaker state and failure analysis
-- Trust system metrics with source distribution tracking
-- System-wide threat level monitoring
-- Performance metrics for request handling and latency
-
-### Health and Status Monitoring
-
-- Component health reporting
-- System-wide defensive posture tracking
-- Anomaly rate monitoring by category
-- Warning indicators for potential security issues
-
-### Operational Benefits
-
-- Early warning of system degradation
-- Security incident detection and response
-- Capacity planning and performance optimization
-- Post-incident analysis and investigation
-
-## Policy Management
-
-Dynamic policy management allows updating security and routing policies without service restart:
-
-- Versioned policies with runtime updates
-- Support for security, routing, rate limiting, and access control policies
-- Policy persistence with automatic loading on startup
-
-## Development
-
-The gateway is implemented as a Go package with modular components:
-
-- `pkg/flightgw/server`: Flight server implementation
-- `pkg/flightgw/crypto`: Cryptographic components (HMAC, attestation, Merkle)
-- `pkg/flightgw/trust`: Trust scoring system and source registry
-- `pkg/flightgw/anomaly`: Anomaly detection and management system
-- `pkg/flightgw/config`: Configuration management
-- `pkg/flightgw/proxy`: Proxy implementation
-- `pkg/flightgw/telemetry`: Integrated observability framework
-
-## API Endpoints
-
-### Flight Protocol Endpoints
-
-- Default port: 8815
-- Secured with TLS and optional post-quantum cryptography
-- Supports all Arrow Flight RPC methods
-
-### Administrative Endpoints
-
-- Default port: 9090
-- `/health`: Overall service health
-- `/ready`: Service readiness status
-- `/metrics`: Performance metrics and diagnostics
-
-### Policy Management API
-
-- Default port: 9091
-- REST API for managing security policies
-- Supports CRUD operations for all policy types
+© 2025 TFMV — [MIT License](LICENSE)
