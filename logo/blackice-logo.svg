@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  BlackIce – crystalline ice formation logo
+  • Hexagonal ice crystal structure
+  • Sharp, angular geometry representing both ice and security
+  • Dark theme with icy blue accents
+  • Scalable vector design
+-->
+<svg width="400" height="110" viewBox="0 0 400 110" xmlns="http://www.w3.org/2000/svg" role="img"
+    aria-label="BlackIce logo">
+
+    <defs>
+        <!-- Ice crystal gradient -->
+        <linearGradient id="iceGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#00D4FF" />
+            <stop offset="50%" stop-color="#0099CC" />
+            <stop offset="100%" stop-color="#003366" />
+        </linearGradient>
+
+        <!-- Dark ice gradient -->
+        <linearGradient id="darkIce" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#1a1a2e" />
+            <stop offset="100%" stop-color="#0f0f23" />
+        </linearGradient>
+    </defs>
+
+    <!-- Main hexagonal ice crystal -->
+    <g transform="translate(55, 55)">
+        <!-- Outer hexagon -->
+        <polygon points="0,-38 33,-19 33,19 0,38 -33,19 -33,-19" fill="url(#darkIce)" stroke="url(#iceGradient)"
+            stroke-width="2.5" />
+
+        <!-- Inner crystalline structure -->
+        <g stroke="url(#iceGradient)" stroke-width="2" fill="none">
+            <!-- Central lines forming ice crystal pattern -->
+            <line x1="0" y1="-25" x2="0" y2="25" />
+            <line x1="-22" y1="-13" x2="22" y2="13" />
+            <line x1="-22" y1="13" x2="22" y2="-13" />
+
+            <!-- Smaller hexagon inside -->
+            <polygon points="0,-15 13,-8 13,8 0,15 -13,8 -13,-8" fill="none" stroke="url(#iceGradient)"
+                stroke-width="1.5" />
+        </g>
+
+        <!-- Ice shards/fragments -->
+        <g fill="url(#iceGradient)" opacity="0.7">
+            <polygon points="38,-6 44,-10 40,-2" />
+            <polygon points="-38,6 -44,10 -40,2" />
+            <polygon points="6,-44 10,-50 2,-40" />
+            <polygon points="-6,44 -10,50 -2,40" />
+        </g>
+    </g>
+
+    <!-- WordMark -->
+    <text x="140" y="42" font-family="'SF Pro Display', 'Segoe UI', system-ui, sans-serif" font-size="30"
+        font-weight="800" fill="#1a1a2e" letter-spacing="0.5">
+        Black
+    </text>
+
+    <text x="140" y="75" font-family="'SF Pro Display', 'Segoe UI', system-ui, sans-serif" font-size="30"
+        font-weight="300" fill="url(#iceGradient)" letter-spacing="0.5">
+        Ice
+    </text>
+</svg>
